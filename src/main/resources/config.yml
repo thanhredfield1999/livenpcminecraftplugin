@@ -1,0 +1,37 @@
+tick-interval: 10
+activation-range: 48.0
+work-start-tick: 1000
+work-end-tick: 12000
+work-scan-interval-ticks: 100
+action-delay-min-ticks: 20
+action-delay-max-ticks: 60
+inspection-duration-ticks: 12
+danger-range: 10.0
+protection:
+  require-worldguard: true
+economy:
+  currency-name: Xu đồng
+  inventory-capacity: 512
+  output-per-action: 1
+  max-output-per-shift: 32
+  sell-at-shift-end: true
+gemini:
+  enabled: false
+  model: gemini-2.5-flash-lite
+  global-requests-per-minute: 10
+  per-npc-cooldown-seconds: 300
+  monthly-budget-usd: 0.0
+  allowed-intents: [WORK, REST, VISIT_MARKET, SOCIALIZE]
+navigation-timeout-ticks: 400
+max-plot-radius: 8
+ambient:
+  interval-min-ticks: 100
+  interval-max-ticks: 240
+  duration-min-ticks: 30
+  duration-max-ticks: 80
+  player-notice-range: 7.0
+  wander-radius: 3
+navigation:
+  speed-modifier: 0.85
+  distance-margin: 1.5
+  retry-backoff-ticks: 60

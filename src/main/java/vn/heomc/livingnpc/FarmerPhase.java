@@ -1,0 +1,23 @@
+package vn.heomc.livingnpc;
+
+enum FarmerPhase {
+    INACTIVE,
+    GOING_HOME,
+    GOING_TO_PLOT,
+    FINDING_WORK,
+    GOING_TO_CROP,
+    INSPECTING,
+    WORKING,
+    GOING_TO_STORAGE,
+    DEPOSITING,
+    RETURNING_TO_PLOT,
+    GOING_TO_MARKET,
+    SHOPPING,
+    GOING_TO_SCENIC,
+    SOCIALIZING,
+    RESTING,
+    LOOKING_AROUND,
+    WANDERING,
+    WATCHING_PLAYER,
+    SHELTERING
+}

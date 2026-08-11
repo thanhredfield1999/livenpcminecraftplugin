@@ -1,0 +1,46 @@
+# Thêm cư dân của bạn tại đây. `skin` là tên tài khoản Minecraft Java để
+# Citizens tải skin. Để trống nếu muốn dùng skin NPC mặc định.
+# Một cư dân có thể có nhiều nghề, nhưng chỉ runtime đã hoàn thiện mới hoạt động.
+profiles:
+  alaric_fieldhand:
+    name: Alaric
+    gender: male
+    title: Người làm ruộng
+    roles: [farmer]
+    skin: ''
+  matilda_greenvale:
+    name: Matilda
+    gender: female
+    title: Người trồng thảo mộc
+    roles: [farmer]
+    skin: ''
+  edric_barley:
+    name: Edric
+    gender: male
+    title: Người trồng lúa mạch
+    roles: [farmer]
+    skin: ''
+  aveline_rosemary:
+    name: Aveline
+    gender: female
+    title: Người làm vườn
+    roles: [farmer]
+    skin: ''
+  oswin_miller:
+    name: Oswin
+    gender: male
+    title: Thợ xay bột
+    roles: [crafter]
+    skin: ''
+  beatrice_baker:
+    name: Beatrice
+    gender: female
+    title: Thợ làm bánh
+    roles: [cook]
+    skin: ''
+  godfrey_smith:
+    name: Godfrey
+    gender: male
+    title: Thợ rèn
+    roles: [crafter]
+    skin: ''

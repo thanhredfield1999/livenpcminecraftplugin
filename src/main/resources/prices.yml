@@ -1,0 +1,7 @@
+# Private LivingNPC prices. These never deposit to Vault or Essentials Economy.
+# Values are major units and are stored internally as integer minor units.
+npc-prices:
+  wheat: 2.5
+  carrot: 3.0
+  potato: 3.0
+  beetroot: 2.5
