@@ -15,7 +15,10 @@ import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
 import org.bukkit.block.data.Ageable;
+import org.bukkit.block.data.type.Bed;
+import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Monster;
+import org.bukkit.entity.Zombie;
 import org.bukkit.entity.Player;
 import org.bukkit.entity.LivingEntity;
 import org.bukkit.inventory.ItemStack;
@@ -31,6 +34,8 @@ final class FarmerRuntime {
     private final NpcEconomy economy;
     private final WorldMutationPolicy mutationPolicy;
     private final VillageStore villageStore;
+    private final VillagePathCache pathCache;
+    private final SeatManager seatManager;
     private final java.util.function.LongConsumer experienceAwarder;
     private FarmerDefinition definition;
     private FarmerPhase phase = FarmerPhase.INACTIVE;
@@ -45,9 +50,21 @@ final class FarmerRuntime {
     private Location navigationTarget;
     private boolean inspecting;
     private int pendingDelivery;
+    private Deque<Location> deliveryCandidates;
+    private Location activeDeliveryChest;
     private UUID socialPartner;
     private String socialType;
     private boolean socialSpoken;
+    private Long observedShiftKey;
+    private long nextResidentPatrolTick;
+    private Location sleepingBed;
+    private boolean sleepActive;
+    private SeatType seatingType;
+    private FarmerPhase seatResumePhase;
+    private long seatEndTick;
+    private long standEndTick;
+    private boolean lunchSeatCompleted;
+    private long nextEatingAnimationTick;
 
     FarmerRuntime(
             NPC npc,
@@ -55,19 +72,24 @@ final class FarmerRuntime {
             NpcEconomy economy,
             WorldMutationPolicy mutationPolicy,
             VillageStore villageStore,
+            VillagePathCache pathCache,
+            SeatManager seatManager,
             java.util.function.LongConsumer experienceAwarder) {
         this.npc = npc;
         this.definition = definition;
         this.economy = economy;
         this.mutationPolicy = mutationPolicy;
         this.villageStore = villageStore;
+        this.pathCache = pathCache;
+        this.seatManager = seatManager;
         this.experienceAwarder = experienceAwarder;
     }
 
     FarmerRuntime(
             NPC npc, FarmerDefinition definition, NpcEconomy economy,
             WorldMutationPolicy mutationPolicy, VillageStore villageStore) {
-        this(npc, definition, economy, mutationPolicy, villageStore, ignored -> { });
+        this(npc, definition, economy, mutationPolicy, villageStore,
+                new VillagePathCache(villageStore), new SeatManager(villageStore), ignored -> { });
     }
 
     void updateDefinition(FarmerDefinition definition) {
@@ -85,6 +107,80 @@ final class FarmerRuntime {
 
     UUID npcUuid() {
         return npc.getUniqueId();
+    }
+
+    boolean tickSleep(long serverTick, LivingNpcConfig config) {
+        if (!npc.isSpawned() || !(npc.getEntity() instanceof HumanEntity human)) {
+            seatManager.release(npc);
+            return false;
+        }
+        long time = human.getWorld().getTime();
+        ResidentSchedule activeSchedule = definition.schedule(
+                definition.activeRole(), new ResidentSchedule(config.workStartTick(), config.workEndTick()));
+        boolean activeShift = definition.activeRole() != ResidentRole.RESIDENT
+                && definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
+                && SchedulePolicy.isScheduledTime(time, activeSchedule);
+        if (!isBedtime(time) || activeShift) {
+            if (human.isSleeping()) human.wakeup(false);
+            if (phase == FarmerPhase.GOING_TO_BED || phase == FarmerPhase.SLEEPING) reset();
+            sleepingBed = null;
+            sleepActive = false;
+            return false;
+        }
+        if (isSeatingPhase()) finishSeating();
+        if (!definition.enabled(BehaviorFlag.MASTER)) {
+            if (human.isSleeping()) human.wakeup(false);
+            if (phase == FarmerPhase.GOING_TO_BED || phase == FarmerPhase.SLEEPING) reset();
+            sleepingBed = null;
+            sleepActive = false;
+            return false;
+        }
+        if (human.isSleeping()) {
+            sleepActive = true;
+            phase = FarmerPhase.SLEEPING;
+            return true;
+        }
+        sleepActive = true;
+        clearHand();
+        stopInspection();
+        clearSocial();
+        if (phase == FarmerPhase.GOING_TO_BED) {
+            NavigationResult result = navigationResult(serverTick, config);
+            if (result == NavigationResult.IN_PROGRESS) return true;
+            if (result == NavigationResult.ARRIVED && sleep(human)) return true;
+            phase = FarmerPhase.INACTIVE;
+            sleepingBed = null;
+        }
+        if (serverTick < nextNavigationAttemptTick) return true;
+        Location home = definition.home().resolve();
+        if (home == null || !human.getWorld().equals(home.getWorld())) return true;
+        sleepingBed = findBed(home);
+        if (sleepingBed == null) {
+            restAtHome(serverTick, config, home);
+            return true;
+        }
+        Location standing = findStandingLocation(sleepingBed, human.getLocation());
+        if (standing == null || !npc.getNavigator().canNavigateTo(
+                standing, LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()))) {
+            sleepingBed = null;
+            restAtHome(serverTick, config, home);
+            return true;
+        }
+        if (human.getLocation().distanceSquared(standing)
+                <= config.navigationDistanceMargin() * config.navigationDistanceMargin()) {
+            if (!sleep(human)) restAtHome(serverTick, config, home);
+        } else {
+            navigate(standing, FarmerPhase.GOING_TO_BED, serverTick, config);
+        }
+        return true;
+    }
+
+    boolean sleeping() {
+        return sleepActive;
+    }
+
+    static boolean isBedtime(long worldTime) {
+        return worldTime >= 13000L && worldTime < 23000L;
     }
 
     boolean availableForSocial(LivingNpcConfig config) {
@@ -108,27 +204,44 @@ final class FarmerRuntime {
         socialPartner = partner;
         socialType = type;
         socialSpoken = false;
-        navigate(target, type.equals("cho") ? FarmerPhase.GOING_TO_MARKET : FarmerPhase.GOING_TO_SCENIC,
+        return navigate(target, type.equals("cho") ? FarmerPhase.GOING_TO_MARKET : FarmerPhase.GOING_TO_SCENIC,
                 serverTick, config);
-        return true;
     }
 
     void tick(long serverTick, LivingNpcConfig config) {
         if (!npc.isSpawned()) {
+            seatManager.release(npc);
             return;
         }
         if (!definition.enabled(BehaviorFlag.MASTER)) {
             suspend();
             return;
         }
-        if (definition.activeRole() != ResidentRole.FARMER) {
+        Location npcLocation = npc.getEntity().getLocation();
+        updateLookPose();
+        Collection<Player> nearbyPlayers = npcLocation.getWorld().getNearbyPlayers(npcLocation, config.activationRange());
+        if (nearbyPlayers.isEmpty() && definition.activeRole() == ResidentRole.FARMER && definition.plot() != null) {
+            Location plot = definition.plot().resolve();
+            if (plot != null && npcLocation.getWorld().equals(plot.getWorld())) {
+                nearbyPlayers = plot.getWorld().getNearbyPlayers(plot, config.activationRange());
+            }
+        }
+        boolean active = !nearbyPlayers.isEmpty();
+        if (!active) {
             suspend();
             return;
         }
-        Location npcLocation = npc.getEntity().getLocation();
-        Collection<Player> nearbyPlayers = npcLocation.getWorld().getNearbyPlayers(npcLocation, config.activationRange());
-        boolean active = !nearbyPlayers.isEmpty();
-        if (!active) {
+
+        if (definition.activeRole() == ResidentRole.RESIDENT) {
+            clearHand();
+            if (definition.enabled(BehaviorFlag.AVOID_MONSTERS) && hasNearbyDanger(npcLocation, config)) {
+                goHome(serverTick, config, FarmerPhase.SHELTERING);
+            } else {
+                residentLife(serverTick, config, nearbyPlayers);
+            }
+            return;
+        }
+        if (definition.activeRole() != ResidentRole.FARMER) {
             suspend();
             return;
         }
@@ -140,22 +253,49 @@ final class FarmerRuntime {
 
         ResidentSchedule schedule = definition.schedule(
                 ResidentRole.FARMER, new ResidentSchedule(config.workStartTick(), config.workEndTick()));
+        boolean scheduledNow = !definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
+                || SchedulePolicy.isScheduledTime(npcLocation.getWorld().getTime(), schedule);
+        trackShiftTransition(npcLocation, config, schedule, scheduledNow);
+        boolean lunchBreak = definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
+                && FarmerDailyPlan.isLunchBreak(
+                        npcLocation.getWorld().getTime(), schedule, config.farmerDailyPlan());
+        if (lunchBreak) {
+            takeLunchBreak(serverTick, config, nearbyPlayers);
+            return;
+        }
+        lunchSeatCompleted = false;
+        if (isSeatingPhase() && seatingType == SeatType.DINING) {
+            startStanding(serverTick, config, FarmerPhase.GOING_TO_PLOT);
+            tickSeating(serverTick, config);
+            return;
+        }
+        if (phase == FarmerPhase.LUNCH_BREAK) {
+            if (npc.getNavigator().isNavigating()) {
+                npc.getNavigator().cancelNavigation();
+            }
+            navigationTarget = null;
+            phase = FarmerPhase.INACTIVE;
+        }
         boolean workTime = definition.plot() != null
                 && definition.villageId() != null
-                && villageStore.deliveryChest(definition.villageId()) != null
+                && villageStore.configuredDeliveryChest(definition.villageId()) != null
+                && definition.enabled(BehaviorFlag.HARVEST)
+                && definition.enabled(BehaviorFlag.PLANT)
                 && (!definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
                         || SchedulePolicy.isWorkTime(
                                 npcLocation.getWorld().getTime(),
                                 npcLocation.getWorld().hasStorm(),
                                 schedule));
         if (!workTime) {
-            if (config.sellAtShiftEnd() && definition.enabled(BehaviorFlag.SELL_INVENTORY)) {
-                sellCompletedShift(npcLocation, config);
-            }
             if (!handleSocial(serverTick, config)) {
                 idleAtHome(serverTick, config, nearbyPlayers);
             }
             return;
+        }
+
+        if (phase == FarmerPhase.GOING_TO_PLOT || phase == FarmerPhase.FINDING_WORK
+                || phase == FarmerPhase.GOING_TO_CROP || phase == FarmerPhase.INSPECTING) {
+            holdHoe();
         }
 
         Location plot = definition.plot().resolve();
@@ -173,12 +313,17 @@ final class FarmerRuntime {
         }
 
         if (phase == FarmerPhase.INACTIVE || phase == FarmerPhase.GOING_HOME || phase == FarmerPhase.SHELTERING) {
-            navigate(plot, FarmerPhase.GOING_TO_PLOT, serverTick, config);
+            Location plotEntry = findPlotEntry(plot, npcLocation, definition.plotRadius());
+            if (plotEntry != null) {
+                holdHoe();
+                navigate(plotEntry, FarmerPhase.GOING_TO_PLOT, serverTick, config);
+            }
             return;
         }
         if (phase == FarmerPhase.GOING_TO_PLOT) {
             NavigationResult result = navigationResult(serverTick, config);
             if (result == NavigationResult.ARRIVED) {
+                holdHoe();
                 phase = FarmerPhase.FINDING_WORK;
             } else if (result == NavigationResult.FAILED) {
                 phase = FarmerPhase.INACTIVE;
@@ -218,9 +363,10 @@ final class FarmerRuntime {
     }
 
     private void goHome(long serverTick, LivingNpcConfig config, FarmerPhase travelPhase) {
+        if (isSeatingPhase()) finishSeating();
         stopInspection();
         clearHand();
-        Location home = definition.home().resolve();
+        Location home = homeTarget();
         if (home == null) {
             suspend();
             return;
@@ -244,9 +390,33 @@ final class FarmerRuntime {
         }
     }
 
+    private void restAtHome(long serverTick, LivingNpcConfig config, Location home) {
+        Location target = findRestLocation(home, npc.getEntity().getLocation());
+        if (target == null) {
+            phase = FarmerPhase.RESTING;
+            return;
+        }
+        double margin = config.navigationDistanceMargin();
+        if (npc.getEntity().getLocation().distanceSquared(target) <= margin * margin) {
+            if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
+            navigationTarget = null;
+            phase = FarmerPhase.RESTING;
+            return;
+        }
+        if (phase == FarmerPhase.GOING_HOME && navigationTarget != null) {
+            NavigationResult result = navigationResult(serverTick, config);
+            if (result == NavigationResult.IN_PROGRESS) return;
+            if (result == NavigationResult.ARRIVED) {
+                phase = FarmerPhase.RESTING;
+                return;
+            }
+        }
+        navigate(target, FarmerPhase.GOING_HOME, serverTick, config);
+    }
+
     private void idleAtHome(
             long serverTick, LivingNpcConfig config, Collection<Player> nearbyPlayers) {
-        Location home = definition.home().resolve();
+        Location home = homeTarget();
         if (home == null) {
             suspend();
             return;
@@ -276,8 +446,151 @@ final class FarmerRuntime {
         }
     }
 
+    private void takeLunchBreak(
+            long serverTick, LivingNpcConfig config, Collection<Player> nearbyPlayers) {
+        stopInspection();
+        clearHand();
+        currentWork = null;
+        workQueue = null;
+        Location home = homeTarget();
+        if (home == null) {
+            suspend();
+            return;
+        }
+        Location current = npc.getEntity().getLocation();
+        if (!current.getWorld().equals(home.getWorld())) {
+            suspend();
+            return;
+        }
+        if (isSeatingPhase()) {
+            tickSeating(serverTick, config);
+            return;
+        }
+        if (!lunchSeatCompleted && config.seating().enabled()
+                && beginSeating(serverTick, config, SeatType.DINING, FarmerPhase.LUNCH_BREAK)) {
+            return;
+        }
+        if (phase != FarmerPhase.LUNCH_BREAK) {
+            if (npc.getNavigator().isNavigating()) {
+                npc.getNavigator().cancelNavigation();
+            }
+            navigationTarget = null;
+            deliveryCandidates = null;
+            activeDeliveryChest = null;
+            clearSocial();
+            phase = FarmerPhase.LUNCH_BREAK;
+        }
+        if (current.distanceSquared(home) > 16.0) {
+            if (navigationTarget == null) {
+                navigate(home, FarmerPhase.LUNCH_BREAK, serverTick, config);
+            } else {
+                NavigationResult result = navigationResult(serverTick, config);
+                if (result == NavigationResult.FAILED) {
+                    phase = FarmerPhase.LUNCH_BREAK;
+                }
+            }
+            return;
+        }
+        if (npc.getNavigator().isNavigating()) {
+            npc.getNavigator().cancelNavigation();
+            navigationTarget = null;
+        }
+        if (serverTick >= nextAmbientTick) {
+            startLunchAmbient(serverTick, config, nearbyPlayers);
+        }
+    }
+
+    private void startLunchAmbient(
+            long serverTick, LivingNpcConfig config, Collection<Player> nearbyPlayers) {
+        Player player = definition.enabled(BehaviorFlag.WATCH_PLAYERS)
+                ? nearestVisiblePlayer(nearbyPlayers, config.playerNoticeRange()) : null;
+        if (player != null) {
+            faceHorizontal(player.getEyeLocation());
+        } else if (definition.enabled(BehaviorFlag.LOOK_AROUND)) {
+            faceRandomDirection();
+        }
+        phase = FarmerPhase.LUNCH_BREAK;
+        nextAmbientTick = serverTick + randomBetween(
+                config.ambientIntervalMinTicks(), config.ambientIntervalMaxTicks());
+    }
+
+    private void residentLife(
+            long serverTick, LivingNpcConfig config, Collection<Player> nearbyPlayers) {
+        Location home = homeTarget();
+        if (home == null || !npc.getEntity().getWorld().equals(home.getWorld())) {
+            suspend();
+            return;
+        }
+        Location current = npc.getEntity().getLocation();
+        long worldTime = current.getWorld().getTime();
+        boolean stayHome = current.getWorld().hasStorm() || worldTime >= 12000L;
+        if (isSeatingPhase()) {
+            if (stayHome) startStanding(serverTick, config, FarmerPhase.INACTIVE);
+            tickSeating(serverTick, config);
+            return;
+        }
+        if (stayHome) {
+            idleAtHome(serverTick, config, nearbyPlayers);
+            return;
+        }
+        if (phase == FarmerPhase.WANDERING) {
+            NavigationResult result = navigationResult(serverTick, config);
+            if (result == NavigationResult.IN_PROGRESS) return;
+            if (config.seating().enabled() && definition.enabled(BehaviorFlag.REST)
+                    && beginSeating(serverTick, config, SeatType.REST, FarmerPhase.INACTIVE)) {
+                return;
+            }
+            phase = FarmerPhase.RESTING;
+            nextActionTick = serverTick + randomBetween(40, 100);
+            nextResidentPatrolTick = serverTick + randomBetween(
+                    (int) config.residentPatrol().tripCooldownMinTicks(),
+                    (int) config.residentPatrol().tripCooldownMaxTicks());
+            return;
+        }
+        if (phase == FarmerPhase.RESTING || phase == FarmerPhase.LOOKING_AROUND
+                || phase == FarmerPhase.WATCHING_PLAYER) {
+            if (serverTick < nextActionTick) return;
+            phase = FarmerPhase.INACTIVE;
+        }
+        if (definition.enabled(BehaviorFlag.WANDER) && serverTick >= nextResidentPatrolTick) {
+            Location target = pathCache.target(definition.villageId(), current, config.residentPatrol());
+            if (target == null) {
+                target = randomWanderTarget(home, Math.min(12, config.residentPatrol().maxTargetDistance()));
+            }
+            if (target != null && npc.getNavigator().canNavigateTo(
+                    target, LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()))) {
+                navigate(target, FarmerPhase.WANDERING, serverTick, config);
+                return;
+            }
+            nextResidentPatrolTick = serverTick + config.navigationRetryBackoffTicks();
+        }
+        if (serverTick >= nextAmbientTick) {
+            Player player = definition.enabled(BehaviorFlag.WATCH_PLAYERS)
+                    ? nearestVisiblePlayer(nearbyPlayers, config.playerNoticeRange()) : null;
+            if (player != null) {
+                faceHorizontal(player.getEyeLocation());
+                phase = FarmerPhase.WATCHING_PLAYER;
+            } else if (definition.enabled(BehaviorFlag.LOOK_AROUND)) {
+                faceRandomDirection();
+                phase = FarmerPhase.LOOKING_AROUND;
+            } else {
+                if (config.seating().enabled() && definition.enabled(BehaviorFlag.REST)
+                        && beginSeating(serverTick, config, SeatType.REST, FarmerPhase.INACTIVE)) {
+                    return;
+                }
+                phase = FarmerPhase.RESTING;
+            }
+            nextActionTick = serverTick + randomBetween(
+                    config.ambientDurationMinTicks(), config.ambientDurationMaxTicks());
+            scheduleAmbient(serverTick, config);
+        }
+    }
+
     private void findWork(long serverTick, LivingNpcConfig config, Location plot, Collection<Player> nearbyPlayers) {
         if (workQueue == null || workQueue.isEmpty()) {
+            if (pendingDelivery > 0 && startDelivery(serverTick, config)) {
+                return;
+            }
             if (!scanStaggerInitialized) {
                 lastScanTick = serverTick
                         - Math.floorMod(npc.getUniqueId().hashCode(), (int) config.workScanIntervalTicks());
@@ -294,9 +607,15 @@ final class FarmerRuntime {
             lastScanTick = serverTick;
         }
         do {
-            currentWork = workQueue.pollFirst();
+            currentWork = workQueue.peekFirst();
+            if (currentWork != null && !isWorkEnabled(currentWork)) {
+                workQueue.pollFirst();
+            }
         } while (currentWork != null && !isWorkEnabled(currentWork));
         if (currentWork == null) {
+            if (pendingDelivery > 0 && startDelivery(serverTick, config)) {
+                return;
+            }
             scheduleAmbient(serverTick, config);
             return;
         }
@@ -306,7 +625,9 @@ final class FarmerRuntime {
             phase = FarmerPhase.FINDING_WORK;
             return;
         }
-        navigate(standingTarget, FarmerPhase.GOING_TO_CROP, serverTick, config);
+        if (navigate(standingTarget, FarmerPhase.GOING_TO_CROP, serverTick, config)) {
+            workQueue.pollFirst();
+        }
     }
 
     private void inspectWork(long serverTick, LivingNpcConfig config) {
@@ -314,7 +635,7 @@ final class FarmerRuntime {
             phase = FarmerPhase.FINDING_WORK;
             return;
         }
-        npc.faceLocation(currentWork.location().clone().add(0.5, 0.5, 0.5));
+        faceBlock(currentWork.location());
         npc.setSneaking(true);
         inspecting = true;
         nextActionTick = serverTick + scaledDelay(config.inspectionDurationTicks());
@@ -325,7 +646,7 @@ final class FarmerRuntime {
         npc.setSneaking(false);
         inspecting = false;
         Material held = currentWork.type() == CropWork.Type.PLANT ? seedFor(currentWork.crop()) : Material.IRON_HOE;
-        npc.getOrAddTrait(Equipment.class).set(EquipmentSlot.HAND, new ItemStack(held));
+        setHand(new ItemStack(held));
         nextActionTick = serverTick + Math.max(5L, scaledDelay(config.inspectionDurationTicks() / 2L));
         phase = FarmerPhase.WORKING;
     }
@@ -345,15 +666,22 @@ final class FarmerRuntime {
             return;
         }
         long shiftKey = SchedulePolicy.activeShiftKey(block.getWorld().getFullTime(), schedule(config));
+        int seedSurplus = currentWork.type() == CropWork.Type.HARVEST && currentWork.crop() == Material.WHEAT
+                ? wheatSeedSurplus(block.getDrops(new ItemStack(Material.IRON_HOE)).stream()
+                        .filter(drop -> drop.getType() == Material.WHEAT_SEEDS)
+                        .mapToInt(ItemStack::getAmount)
+                        .sum())
+                : 0;
         if (currentWork.type() == CropWork.Type.HARVEST
-                && !economy.canAcceptProduction(
-                        npc.getUniqueId(), definition.villageId(), config.outputPerAction(), shiftKey)) {
+                && !economy.canAcceptHarvest(
+                        npc.getUniqueId(), definition.villageId(), config.outputPerAction(), seedSurplus, shiftKey)) {
             currentWork = null;
             clearHand();
             phase = FarmerPhase.FINDING_WORK;
             return;
         }
         if (npc.getEntity() instanceof LivingEntity living) {
+            faceBlock(block.getLocation());
             living.swingMainHand();
         }
         boolean actionSucceeded = false;
@@ -364,7 +692,9 @@ final class FarmerRuntime {
                 && block.getBlockData() instanceof Ageable ageable
                 && ageable.getAge() == ageable.getMaximumAge()
                 && mutationPolicy.allows(block.getLocation(), MutationType.PLACE)) {
-            block.setType(Material.AIR, true);
+            Ageable replanted = (Ageable) ageable.clone();
+            replanted.setAge(0);
+            block.setBlockData(replanted, true);
             actionSucceeded = true;
             produced = true;
         } else if (currentWork.type() == CropWork.Type.PLANT
@@ -381,27 +711,31 @@ final class FarmerRuntime {
                         npc.getUniqueId(), definition.villageId(), output, config.outputPerAction(), shiftKey);
                 if (accepted) {
                     pendingDelivery += config.outputPerAction();
+                    economy.recordActivity(
+                            npc.getUniqueId(), definition.villageId(), ResidentRole.FARMER,
+                            "Thu hoạch", output, config.outputPerAction());
+                    if (seedSurplus > 0 && economy.addByproduct(
+                            npc.getUniqueId(), definition.villageId(), "wheat_seeds", seedSurplus, shiftKey)) {
+                        pendingDelivery += seedSurplus;
+                    }
                 }
             }
         }
         if (actionSucceeded) {
             experienceAwarder.accept(10L);
-        }
-        if (produced) {
-            Material harvestedCrop = currentWork.crop();
-            currentWork = new CropWork(block.getLocation(), CropWork.Type.PLANT, harvestedCrop);
-            npc.getOrAddTrait(Equipment.class).set(
-                    EquipmentSlot.HAND, new ItemStack(seedFor(harvestedCrop)));
-            nextActionTick = serverTick + Math.max(10L, scaledDelay(config.inspectionDurationTicks()));
-            phase = FarmerPhase.WORKING;
-            return;
+            if (!produced) {
+                economy.recordActivity(
+                        npc.getUniqueId(), definition.villageId(), ResidentRole.FARMER,
+                        "Trồng cây", harvestOutput(currentWork.crop()), 1);
+            }
         }
         currentWork = null;
-        clearHand();
-        scheduleAmbient(serverTick, config);
-        if (pendingDelivery > 0 && startDelivery(serverTick, config)) {
+        holdHoe();
+        phase = FarmerPhase.FINDING_WORK;
+        if (workQueue != null && !workQueue.isEmpty()) {
             return;
         }
+        scheduleAmbient(serverTick, config);
         if (definition.enabled(BehaviorFlag.REST)) {
             nextActionTick = serverTick + randomDelay(config);
             phase = FarmerPhase.RESTING;
@@ -448,7 +782,7 @@ final class FarmerRuntime {
         nextActionTick = serverTick + randomBetween(config.ambientDurationMinTicks(), config.ambientDurationMaxTicks());
         switch (action) {
             case WATCH_PLAYER -> {
-                npc.faceLocation(player.getEyeLocation());
+                faceHorizontal(player.getEyeLocation());
                 phase = FarmerPhase.WATCHING_PLAYER;
             }
             case WANDER -> {
@@ -488,6 +822,68 @@ final class FarmerRuntime {
                 || phase == FarmerPhase.WATCHING_PLAYER;
     }
 
+    private Location findBed(Location home) {
+        if (home.getBlock().getBlockData() instanceof Bed bed && !bed.isOccupied()) {
+            return home.getBlock().getLocation();
+        }
+        Location best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (int x = -4; x <= 4; x++) {
+            for (int z = -4; z <= 4; z++) {
+                for (int y = -2; y <= 2; y++) {
+                    Block block = home.getWorld().getBlockAt(
+                            home.getBlockX() + x, home.getBlockY() + y, home.getBlockZ() + z);
+                    if (!(block.getBlockData() instanceof Bed bed)
+                            || bed.getPart() != Bed.Part.HEAD || bed.isOccupied()) continue;
+                    double distance = home.distanceSquared(block.getLocation());
+                    if (distance < bestDistance) {
+                        best = block.getLocation();
+                        bestDistance = distance;
+                    }
+                }
+            }
+        }
+        return best;
+    }
+
+    private Location homeTarget() {
+        Location home = definition.home().resolve();
+        if (home == null || !(home.getBlock().getBlockData() instanceof Bed)) return home;
+        return findStandingLocation(home, npc.getEntity().getLocation());
+    }
+
+    private Location findRestLocation(Location home, Location current) {
+        Location standing = findStandingLocation(home, current);
+        if (standing != null) return standing;
+        java.util.ArrayList<Location> candidates = new java.util.ArrayList<>();
+        for (int radius = 1; radius <= 4; radius++) {
+            for (int x = -radius; x <= radius; x++) for (int z = -radius; z <= radius; z++) {
+                if (Math.abs(x) != radius && Math.abs(z) != radius) continue;
+                for (int y = 2; y >= -2; y--) {
+                    Block feet = home.getWorld().getBlockAt(
+                            home.getBlockX() + x, home.getBlockY() + y, home.getBlockZ() + z);
+                    if (feet.isPassable() && feet.getRelative(0, 1, 0).isPassable()
+                            && feet.getRelative(0, -1, 0).getType().isSolid()) {
+                        candidates.add(feet.getLocation().add(0.5, 0, 0.5));
+                    }
+                }
+            }
+            Location reachable = nearestReachable(candidates, current, candidates.size());
+            if (reachable != null) return reachable;
+        }
+        return null;
+    }
+
+    private boolean sleep(HumanEntity human) {
+        if (sleepingBed == null || !(sleepingBed.getBlock().getBlockData() instanceof Bed bed)
+                || bed.isOccupied()) return false;
+        if (!human.sleep(sleepingBed, true)) return false;
+        if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
+        navigationTarget = null;
+        phase = FarmerPhase.SLEEPING;
+        return true;
+    }
+
     private Player nearestVisiblePlayer(Collection<Player> players, double range) {
         Location current = npc.getEntity().getLocation();
         double rangeSquared = range * range;
@@ -499,7 +895,17 @@ final class FarmerRuntime {
     }
 
     private boolean hasNearbyDanger(Location location, LivingNpcConfig config) {
-        return !location.getWorld().getNearbyEntitiesByType(Monster.class, location, config.dangerRange()).isEmpty();
+        Collection<Monster> monsters = location.getWorld()
+                .getNearbyEntitiesByType(Monster.class, location, config.dangerRange());
+        if (npc.getEntity() instanceof LivingEntity living) {
+            for (Monster monster : monsters) {
+                if (monster instanceof Zombie zombie
+                        && (zombie.getTarget() == null || !zombie.getTarget().isValid())) {
+                    zombie.setTarget(living);
+                }
+            }
+        }
+        return !monsters.isEmpty();
     }
 
     private boolean isWorkEnabled(CropWork work) {
@@ -530,26 +936,40 @@ final class FarmerRuntime {
         };
     }
 
+    static int wheatSeedSurplus(int harvestedSeeds) {
+        return Math.max(0, harvestedSeeds - 1);
+    }
+
     private boolean startDelivery(long serverTick, LivingNpcConfig config) {
-        Location chest = villageStore.deliveryChest(definition.villageId());
-        if (chest == null || !npc.getEntity().getWorld().equals(chest.getWorld())) {
-            return false;
+        Location current = npc.getEntity().getLocation();
+        if (deliveryCandidates == null || deliveryCandidates.isEmpty()) {
+            deliveryCandidates = villageStore.deliveryChests(definition.villageId()).stream()
+                    .filter(chest -> current.getWorld().equals(chest.getWorld()))
+                    .filter(chest -> Math.abs(chest.getBlockY() - current.getBlockY()) <= 4)
+                    .sorted(Comparator.comparingDouble(chest -> current.distanceSquared(chest)))
+                    .collect(java.util.stream.Collectors.toCollection(java.util.ArrayDeque::new));
         }
-        Location standingTarget = findStandingLocation(chest, npc.getEntity().getLocation());
-        if (standingTarget == null) {
-            return false;
+        while (!deliveryCandidates.isEmpty()) {
+            Location chest = deliveryCandidates.pollFirst();
+            Location standingTarget = findStandingLocation(chest, current);
+            if (standingTarget == null || !npc.getNavigator().canNavigateTo(
+                    standingTarget, LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()))) continue;
+            activeDeliveryChest = chest.clone();
+            clearHand();
+            if (navigate(standingTarget, FarmerPhase.GOING_TO_STORAGE, serverTick, config)) return true;
         }
-        navigate(standingTarget, FarmerPhase.GOING_TO_STORAGE, serverTick, config);
-        return true;
+        activeDeliveryChest = null;
+        deliveryCandidates = null;
+        return false;
     }
 
     private boolean handleDelivery(long serverTick, LivingNpcConfig config, Location plot) {
         if (phase == FarmerPhase.GOING_TO_STORAGE) {
             NavigationResult result = navigationResult(serverTick, config);
             if (result == NavigationResult.ARRIVED) {
-                Location chest = villageStore.deliveryChest(definition.villageId());
+                Location chest = activeDeliveryChest;
                 if (chest != null) {
-                    npc.faceLocation(chest.clone().add(0.5, 0.5, 0.5));
+                    faceBlock(chest);
                     if (npc.getEntity() instanceof LivingEntity living) {
                         living.swingMainHand();
                     }
@@ -558,25 +978,42 @@ final class FarmerRuntime {
                 nextActionTick = serverTick + 30L;
                 phase = FarmerPhase.DEPOSITING;
             } else if (result == NavigationResult.FAILED) {
+                activeDeliveryChest = null;
                 phase = FarmerPhase.FINDING_WORK;
+                startDelivery(serverTick, config);
             }
             return true;
         }
         if (phase == FarmerPhase.DEPOSITING) {
+            Location chest = activeDeliveryChest;
+            if (chest != null) {
+                faceBlock(chest);
+            }
             if (serverTick >= nextActionTick) {
-                Location chest = villageStore.deliveryChest(definition.villageId());
                 if (chest != null) {
                     chest.getWorld().playSound(chest, org.bukkit.Sound.BLOCK_CHEST_CLOSE, 0.7f, 1.0f);
                 }
                 pendingDelivery = 0;
-                navigate(plot, FarmerPhase.RETURNING_TO_PLOT, serverTick, config);
+                activeDeliveryChest = null;
+                deliveryCandidates = null;
+                Location plotEntry = findPlotEntry(plot, npc.getEntity().getLocation(), definition.plotRadius());
+                if (plotEntry == null
+                        || !navigate(plotEntry, FarmerPhase.RETURNING_TO_PLOT, serverTick, config)) {
+                    phase = FarmerPhase.INACTIVE;
+                }
             }
             return true;
         }
         if (phase == FarmerPhase.RETURNING_TO_PLOT) {
             NavigationResult result = navigationResult(serverTick, config);
             if (result != NavigationResult.IN_PROGRESS) {
-                phase = result == NavigationResult.ARRIVED ? FarmerPhase.FINDING_WORK : FarmerPhase.INACTIVE;
+                if (result == NavigationResult.ARRIVED) {
+                    holdHoe();
+                    workQueue = null;
+                    phase = FarmerPhase.FINDING_WORK;
+                } else {
+                    phase = FarmerPhase.INACTIVE;
+                }
             }
             return true;
         }
@@ -610,7 +1047,7 @@ final class FarmerRuntime {
             if (partner != null && partner.isSpawned()
                     && partner.getEntity().getWorld().equals(location.getWorld())
                     && partner.getEntity().getLocation().distanceSquared(location) <= 36.0) {
-                npc.faceLocation(partner.getEntity().getLocation());
+                faceHorizontal(partner.getEntity().getLocation());
                 speakSocial(partner, location);
                 socialSpoken = true;
             }
@@ -652,14 +1089,36 @@ final class FarmerRuntime {
         economy.sellAtShiftEnd(npc.getUniqueId(), definition.villageId(), completedShift);
     }
 
+    void finishFarmerShift(LivingNpcConfig config) {
+        if (npc.isSpawned() && config.sellAtShiftEnd() && definition.enabled(BehaviorFlag.SELL_INVENTORY)) {
+            sellCompletedShift(npc.getEntity().getLocation(), config);
+        }
+        observedShiftKey = null;
+    }
+
+    private void trackShiftTransition(
+            Location location, LivingNpcConfig config, ResidentSchedule schedule, boolean scheduledNow) {
+        if (!definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)) {
+            observedShiftKey = null;
+            return;
+        }
+        if (scheduledNow) {
+            observedShiftKey = SchedulePolicy.activeShiftKey(location.getWorld().getFullTime(), schedule);
+        } else if (observedShiftKey != null) {
+            if (config.sellAtShiftEnd() && definition.enabled(BehaviorFlag.SELL_INVENTORY)) {
+                economy.sellAtShiftEnd(npc.getUniqueId(), definition.villageId(), observedShiftKey);
+            }
+            observedShiftKey = null;
+        }
+    }
+
     private ResidentSchedule schedule(LivingNpcConfig config) {
         return definition.schedule(
                 ResidentRole.FARMER, new ResidentSchedule(config.workStartTick(), config.workEndTick()));
     }
 
     private Location findStandingLocation(Location crop, Location current) {
-        Location best = null;
-        double bestDistance = Double.MAX_VALUE;
+        java.util.ArrayList<Location> candidates = new java.util.ArrayList<>();
         int[][] offsets = {{1, 0}, {-1, 0}, {0, 1}, {0, -1}};
         for (int[] offset : offsets) {
             Location candidate = crop.clone().add(offset[0] + 0.5, 0, offset[1] + 0.5);
@@ -667,13 +1126,45 @@ final class FarmerRuntime {
             if (!feet.isPassable() || !feet.getRelative(0, 1, 0).isPassable() || feet.getRelative(0, -1, 0).isPassable()) {
                 continue;
             }
-            double distance = current.distanceSquared(candidate);
-            if (distance < bestDistance) {
-                best = candidate;
-                bestDistance = distance;
+            candidates.add(candidate);
+        }
+        return nearestReachable(candidates, current, candidates.size());
+    }
+
+    private Location findPlotEntry(Location plot, Location current, int radius) {
+        java.util.ArrayList<Location> candidates = new java.util.ArrayList<>();
+        int boundedRadius = Math.max(1, radius) + 1;
+        for (int x = -boundedRadius; x <= boundedRadius; x++) {
+            for (int z = -boundedRadius; z <= boundedRadius; z++) {
+                if (Math.abs(x) != boundedRadius && Math.abs(z) != boundedRadius) {
+                    continue;
+                }
+                for (int y = 2; y >= -2; y--) {
+                    Location candidate = plot.clone().add(x + 0.5, y, z + 0.5);
+                    Block feet = candidate.getBlock();
+                    if (!feet.isPassable() || !feet.getRelative(0, 1, 0).isPassable()
+                            || feet.getRelative(0, -1, 0).isPassable()) {
+                        continue;
+                    }
+                    candidates.add(candidate);
+                }
             }
         }
-        return best;
+        return nearestReachable(candidates, current, 8);
+    }
+
+    private Location nearestReachable(java.util.List<Location> candidates, Location current, int pathCheckLimit) {
+        candidates.sort(java.util.Comparator.comparingDouble(current::distanceSquared));
+        for (int index = 0; index < Math.min(pathCheckLimit, candidates.size()); index++) {
+            Location candidate = candidates.get(index);
+            if (canNavigateTo(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    private boolean canNavigateTo(Location target) {
+        return npc.getNavigator().canNavigateTo(
+                target, LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()));
     }
 
     private Location randomWanderTarget(Location center, int radius) {
@@ -697,28 +1188,172 @@ final class FarmerRuntime {
         Location eyeLevel = npc.getEntity() instanceof LivingEntity living
                 ? living.getEyeLocation()
                 : current.clone().add(0, 1.6, 0);
-        npc.faceLocation(eyeLevel.add(Math.cos(angle) * 4.0, 0, Math.sin(angle) * 4.0));
+        faceHorizontal(eyeLevel.add(Math.cos(angle) * 4.0, 0, Math.sin(angle) * 4.0));
+    }
+
+    private void updateLookPose() {
+        if (isSeatingPhase()) {
+            seatManager.lockRotation(npc);
+            return;
+        }
+        if ((phase == FarmerPhase.INSPECTING || phase == FarmerPhase.WORKING) && currentWork != null) {
+            faceBlock(currentWork.location());
+            return;
+        }
+        if (phase == FarmerPhase.DEPOSITING) {
+            Location chest = villageStore.deliveryChest(definition.villageId());
+            if (chest != null) {
+                faceBlock(chest);
+                return;
+            }
+        }
+        faceForwardHorizontal();
+    }
+
+    private void faceBlock(Location block) {
+        setRotationToward(block.clone().add(0.5, 0.35, 0.5), true);
+    }
+
+    private void faceHorizontal(Location target) {
+        setRotationToward(target, false);
+    }
+
+    private void faceForwardHorizontal() {
+        org.bukkit.entity.Entity entity = npc.getEntity();
+        entity.setRotation(entity.getYaw(), 0.0f);
+    }
+
+    private void setRotationToward(Location target, boolean lookDown) {
+        org.bukkit.entity.Entity entity = npc.getEntity();
+        Location eye = entity instanceof LivingEntity living
+                ? living.getEyeLocation()
+                : entity.getLocation().add(0, 1.6, 0);
+        double dx = target.getX() - eye.getX();
+        double dz = target.getZ() - eye.getZ();
+        float yaw = (float) Math.toDegrees(Math.atan2(-dx, dz));
+        float pitch = lookDown
+                ? lookPitchDegrees(Math.hypot(dx, dz), target.getY() - eye.getY())
+                : 0.0f;
+        entity.setRotation(yaw, pitch);
+    }
+
+    static float lookPitchDegrees(double horizontalDistance, double verticalDelta) {
+        double horizontal = Math.max(0.01, horizontalDistance);
+        return (float) Math.clamp(-Math.toDegrees(Math.atan2(verticalDelta, horizontal)), -60.0, 60.0);
     }
 
     private void scheduleAmbient(long serverTick, LivingNpcConfig config) {
         nextAmbientTick = serverTick + randomBetween(config.ambientIntervalMinTicks(), config.ambientIntervalMaxTicks());
     }
 
-    private void navigate(Location target, FarmerPhase targetPhase, long serverTick, LivingNpcConfig config) {
-        if (serverTick < nextNavigationAttemptTick) {
+    private boolean beginSeating(
+            long serverTick, LivingNpcConfig config, SeatType type, FarmerPhase resumePhase) {
+        if (definition.villageId() == null || seatManager.reserveClosest(
+                npc.getUniqueId(), definition.villageId(), type, npc.getEntity().getLocation(),
+                location -> npc.getNavigator().canNavigateTo(
+                        location, LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()))) == null) {
+            return false;
+        }
+        Location approach = SeatValidator.approachLocation(seatManager.seat(npc.getUniqueId()));
+        if (approach == null || !navigate(approach, FarmerPhase.GOING_TO_SEAT, serverTick, config)) {
+            seatManager.release(npc);
+            return false;
+        }
+        seatingType = type;
+        seatResumePhase = resumePhase;
+        return true;
+    }
+
+    private void tickSeating(long serverTick, LivingNpcConfig config) {
+        if (phase == FarmerPhase.GOING_TO_SEAT) {
+            NavigationResult result = navigationResult(serverTick, config);
+            if (result == NavigationResult.IN_PROGRESS) return;
+            if (result != NavigationResult.ARRIVED || !seatManager.sit(npc)) {
+                finishSeating();
+                return;
+            }
+            phase = seatingType == SeatType.DINING ? FarmerPhase.SITTING_DINING : FarmerPhase.SITTING_REST;
+            if (seatingType == SeatType.DINING) {
+                setHand(new ItemStack(Material.BREAD));
+                nextEatingAnimationTick = serverTick + 20L;
+            }
+            seatEndTick = serverTick + randomBetween(
+                    (int) config.seating().restDurationMinTicks(),
+                    (int) config.seating().restDurationMaxTicks());
             return;
+        }
+        if (phase == FarmerPhase.SITTING_REST || phase == FarmerPhase.SITTING_DINING) {
+            if (!SeatValidator.stillValid(seatManager.seat(npc.getUniqueId()))) {
+                startStanding(serverTick, config, seatResumePhase);
+                return;
+            }
+            seatManager.lockRotation(npc);
+            if (phase == FarmerPhase.SITTING_DINING && serverTick >= nextEatingAnimationTick
+                    && npc.getEntity() instanceof LivingEntity living) {
+                living.swingMainHand();
+                nextEatingAnimationTick = serverTick + 30L;
+            }
+            if (serverTick >= seatEndTick) startStanding(serverTick, config, seatResumePhase);
+            return;
+        }
+        if (phase == FarmerPhase.STANDING_UP) {
+            if (serverTick < standEndTick) return;
+            npc.setSneaking(false);
+            FarmerPhase resume = seatResumePhase == null ? FarmerPhase.INACTIVE : seatResumePhase;
+            if (seatingType == SeatType.DINING) lunchSeatCompleted = true;
+            seatManager.release(npc);
+            seatingType = null;
+            seatResumePhase = null;
+            phase = resume;
+            scheduleAmbient(serverTick, config);
+        }
+    }
+
+    private void startStanding(long serverTick, LivingNpcConfig config, FarmerPhase resumePhase) {
+        seatManager.release(npc);
+        clearHand();
+        npc.setSneaking(true);
+        seatResumePhase = resumePhase;
+        standEndTick = serverTick + config.seating().standDurationTicks();
+        phase = FarmerPhase.STANDING_UP;
+    }
+
+    private void finishSeating() {
+        FarmerPhase resume = seatResumePhase == null ? FarmerPhase.INACTIVE : seatResumePhase;
+        seatManager.release(npc);
+        clearHand();
+        npc.setSneaking(false);
+        if (seatingType == SeatType.DINING) lunchSeatCompleted = true;
+        seatingType = null;
+        seatResumePhase = null;
+        phase = resume;
+    }
+
+    private boolean isSeatingPhase() {
+        return phase == FarmerPhase.GOING_TO_SEAT
+                || phase == FarmerPhase.SITTING_REST
+                || phase == FarmerPhase.SITTING_DINING
+                || phase == FarmerPhase.STANDING_UP;
+    }
+
+    private boolean navigate(Location target, FarmerPhase targetPhase, long serverTick, LivingNpcConfig config) {
+        if (serverTick < nextNavigationAttemptTick) {
+            return false;
         }
         Navigator navigator = npc.getNavigator();
         navigator.cancelNavigation();
-        navigator.setTarget(target);
-        navigator.getLocalParameters()
+        LivingNavigation.allowDoors(navigator.getLocalParameters())
                 .speedModifier((float) (config.navigationSpeedModifier()
                         * definition.progress(ResidentRole.FARMER).speedMultiplier()))
                 .distanceMargin(config.navigationDistanceMargin())
-                .pathDistanceMargin(config.navigationDistanceMargin());
+                .pathDistanceMargin(config.navigationDistanceMargin())
+                .destinationTeleportMargin(0.0)
+                .stuckAction((stuckNpc, stuckNavigator) -> false);
+        navigator.setTarget(target);
         navigationTarget = target.clone();
         navigationStartedTick = serverTick;
         phase = targetPhase;
+        return true;
     }
 
     private NavigationResult navigationResult(long serverTick, LivingNpcConfig config) {
@@ -742,6 +1377,8 @@ final class FarmerRuntime {
 
     private NavigationResult navigationFailed(long serverTick, LivingNpcConfig config) {
         navigationTarget = null;
+        activeDeliveryChest = null;
+        deliveryCandidates = null;
         nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
         return NavigationResult.FAILED;
     }
@@ -759,12 +1396,21 @@ final class FarmerRuntime {
     }
 
     void suspend() {
+        if (npc.isSpawned() && npc.getEntity() instanceof HumanEntity human && human.isSleeping()) {
+            human.wakeup(false);
+        }
         if (npc.getNavigator().isNavigating()) {
             npc.getNavigator().cancelNavigation();
         }
+        seatManager.release(npc);
+        npc.setSneaking(false);
+        seatingType = null;
+        seatResumePhase = null;
         clearHand();
         stopInspection();
         reset();
+        sleepingBed = null;
+        sleepActive = false;
     }
 
     private void stopInspection() {
@@ -775,9 +1421,21 @@ final class FarmerRuntime {
     }
 
     private void clearHand() {
+        setHand(null);
+    }
+
+    private void holdHoe() {
         Equipment equipment = npc.getOrAddTrait(Equipment.class);
-        if (equipment.get(EquipmentSlot.HAND) != null) {
-            equipment.set(EquipmentSlot.HAND, null);
+        ItemStack held = equipment.get(EquipmentSlot.HAND);
+        if (held == null || held.getType() != Material.IRON_HOE) {
+            setHand(new ItemStack(Material.IRON_HOE));
+        }
+    }
+
+    private void setHand(ItemStack item) {
+        npc.getOrAddTrait(Equipment.class).set(EquipmentSlot.HAND, item);
+        if (npc.isSpawned() && npc.getEntity() instanceof LivingEntity living) {
+            living.getEquipment().setItemInMainHand(item);
         }
     }
 

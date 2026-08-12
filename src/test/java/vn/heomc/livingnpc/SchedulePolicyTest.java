@@ -17,6 +17,7 @@ class SchedulePolicyTest {
     @Test
     void staysHomeDuringStorm() {
         assertFalse(SchedulePolicy.isWorkTime(6000, true, 1000, 12000));
+        assertTrue(SchedulePolicy.isScheduledTime(6000, 1000, 12000));
     }
 
     @Test

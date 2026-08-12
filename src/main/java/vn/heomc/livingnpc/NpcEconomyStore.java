@@ -12,14 +12,18 @@ import java.util.Map;
 import java.util.UUID;
 import java.util.logging.Logger;
 import org.bukkit.configuration.ConfigurationSection;
+import org.bukkit.configuration.InvalidConfigurationException;
 import org.bukkit.configuration.file.YamlConfiguration;
 
 final class NpcEconomyStore {
     private static final int MAX_JOURNAL_ENTRIES = 500;
+    private static final int SCHEMA_VERSION = 3;
     private final File file;
     private final Logger logger;
     private final Map<UUID, NpcAccount> accounts = new LinkedHashMap<>();
     private final List<Map<String, Object>> journal = new ArrayList<>();
+    private final java.util.Set<String> transactionIds = new java.util.HashSet<>();
+    private boolean writable = true;
 
     NpcEconomyStore(File dataFolder, Logger logger) {
         this.file = new File(dataFolder, "economy.yml");
@@ -36,9 +40,17 @@ final class NpcEconomyStore {
     }
 
     boolean remove(UUID npcUuid) {
-        accounts.remove(npcUuid);
+        NpcAccount removedAccount = accounts.remove(npcUuid);
+        List<Map<String, Object>> previousJournal = new ArrayList<>(journal);
+        java.util.Set<String> previousTransactions = new java.util.HashSet<>(transactionIds);
         journal.removeIf(entry -> npcUuid.toString().equals(entry.get("npc")));
-        return save();
+        if (save()) return true;
+        if (removedAccount != null) accounts.put(npcUuid, removedAccount);
+        journal.clear();
+        journal.addAll(previousJournal);
+        transactionIds.clear();
+        transactionIds.addAll(previousTransactions);
+        return false;
     }
 
     void recordSale(UUID npcUuid, SaleResult sale) {
@@ -51,9 +63,8 @@ final class NpcEconomyStore {
         entry.put("source", "livingnpc-price-book");
         entry.put("created-at", Instant.now().toString());
         journal.add(entry);
-        while (journal.size() > MAX_JOURNAL_ENTRIES) {
-            journal.removeFirst();
-        }
+        transactionIds.add(sale.transactionId());
+        trimJournal();
     }
 
     void restore(NpcAccount account) {
@@ -62,10 +73,96 @@ final class NpcEconomyStore {
 
     void removeSale(String transactionId) {
         journal.removeIf(entry -> transactionId.equals(entry.get("id")));
+        transactionIds.remove(transactionId);
+    }
+
+    boolean hasTransaction(String transactionId) {
+        return transactionIds.contains(transactionId);
+    }
+
+    void recordVisitorSale(UUID villageAccountUuid, String transactionId, int items, long totalMinor) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("id", transactionId);
+        entry.put("npc", villageAccountUuid.toString());
+        entry.put("type", "VISITOR_SALE");
+        entry.put("items", items);
+        entry.put("total-minor", totalMinor);
+        entry.put("source", "temporary-visitor");
+        entry.put("created-at", Instant.now().toString());
+        journal.add(entry);
+        transactionIds.add(transactionId);
+        trimJournal();
+    }
+
+    void recordActivity(NpcActivity activity) {
+        Map<String, Object> entry = new LinkedHashMap<>();
+        entry.put("npc", activity.npcUuid().toString());
+        entry.put("village", activity.villageId());
+        entry.put("type", "ACTIVITY");
+        entry.put("role", activity.role().storageKey());
+        entry.put("action", activity.action());
+        entry.put("item", activity.itemKey());
+        entry.put("amount", activity.amount());
+        entry.put("created-at", activity.createdAt().toString());
+        journal.add(entry);
+        trimJournal();
+    }
+
+    List<NpcActivity> activities(String villageId, ResidentRole role, int limit) {
+        List<NpcActivity> result = new ArrayList<>();
+        for (int index = journal.size() - 1; index >= 0 && result.size() < limit; index--) {
+            Map<String, Object> entry = journal.get(index);
+            if (!"ACTIVITY".equals(entry.get("type")) || !java.util.Objects.equals(villageId, entry.get("village"))) continue;
+            ResidentRole entryRole = ResidentRole.parse(String.valueOf(entry.get("role")));
+            if (entryRole == null || role != null && entryRole != role) continue;
+            try {
+                result.add(new NpcActivity(
+                        UUID.fromString(String.valueOf(entry.get("npc"))), villageId, entryRole,
+                        String.valueOf(entry.get("action")), String.valueOf(entry.get("item")),
+                        entry.get("amount") instanceof Number number ? number.intValue() : 0,
+                        Instant.parse(String.valueOf(entry.get("created-at")))));
+            } catch (IllegalArgumentException ignored) {
+                // Ignore malformed legacy journal rows.
+            }
+        }
+        return List.copyOf(result);
+    }
+
+    NpcActivity latestActivity(UUID npcUuid) {
+        for (int index = journal.size() - 1; index >= 0; index--) {
+            Map<String, Object> entry = journal.get(index);
+            if (!"ACTIVITY".equals(entry.get("type"))
+                    || !npcUuid.toString().equals(String.valueOf(entry.get("npc")))) continue;
+            ResidentRole role = ResidentRole.parse(String.valueOf(entry.get("role")));
+            if (role == null) return null;
+            try {
+                return new NpcActivity(
+                        npcUuid, String.valueOf(entry.get("village")), role,
+                        String.valueOf(entry.get("action")), String.valueOf(entry.get("item")),
+                        entry.get("amount") instanceof Number number ? number.intValue() : 0,
+                        Instant.parse(String.valueOf(entry.get("created-at"))));
+            } catch (IllegalArgumentException ignored) {
+                return null;
+            }
+        }
+        return null;
+    }
+
+    private void trimJournal() {
+        while (journal.size() > MAX_JOURNAL_ENTRIES) {
+            Map<String, Object> removed = journal.removeFirst();
+            Object id = removed.get("id");
+            if (id != null && !String.valueOf(id).isBlank()) transactionIds.remove(String.valueOf(id));
+        }
     }
 
     synchronized boolean save() {
+        if (!writable) {
+            logger.severe("Refusing to overwrite economy.yml after a load failure.");
+            return false;
+        }
         YamlConfiguration yaml = new YamlConfiguration();
+        yaml.set("schema-version", SCHEMA_VERSION);
         ConfigurationSection root = yaml.createSection("accounts");
         for (NpcAccount account : accounts.values()) {
             ConfigurationSection section = root.createSection(account.npcUuid().toString());
@@ -73,6 +170,7 @@ final class NpcEconomyStore {
             section.set("produced-this-shift", account.producedThisShift());
             section.set("shift-key", account.shiftKey());
             section.set("last-sale-shift", account.lastSaleShift());
+            account.roleProduction().forEach((role, amount) -> section.set("role-production." + role, amount));
             for (Map.Entry<String, Integer> item : account.inventory().entrySet()) {
                 section.set("inventory." + item.getKey(), item.getValue());
             }
@@ -96,8 +194,20 @@ final class NpcEconomyStore {
 
     @SuppressWarnings("unchecked")
     private void load() {
-        YamlConfiguration yaml = YamlConfiguration.loadConfiguration(file);
+        YamlConfiguration yaml = new YamlConfiguration();
+        if (file.exists()) {
+            try {
+                yaml.load(file);
+            } catch (IOException | InvalidConfigurationException exception) {
+                writable = false;
+                logger.severe("Could not load economy.yml; writes are disabled to preserve the file: "
+                        + exception.getMessage());
+                return;
+            }
+        }
         ConfigurationSection root = yaml.getConfigurationSection("accounts");
+        int loadedSchemaVersion = yaml.getInt("schema-version", 1);
+        boolean resetLegacyQuota = yaml.getInt("schema-version", 1) < 2;
         if (root != null) {
             for (String key : root.getKeys(false)) {
                 try {
@@ -108,9 +218,18 @@ final class NpcEconomyStore {
                     }
                     NpcAccount account = account(uuid);
                     account.setBalanceMinor(section.getLong("balance-minor"));
-                    account.setProducedThisShift(section.getInt("produced-this-shift"));
+                    account.setProducedThisShift(resetLegacyQuota ? 0 : section.getInt("produced-this-shift"));
                     account.setShiftKey(section.getLong("shift-key", Long.MIN_VALUE));
                     account.setLastSaleShift(section.getLong("last-sale-shift", Long.MIN_VALUE));
+                    ConfigurationSection roleProduction = section.getConfigurationSection("role-production");
+                    if (roleProduction != null) {
+                        for (String role : roleProduction.getKeys(false)) {
+                            account.setRoleProduction(role, roleProduction.getInt(role));
+                        }
+                    } else if (loadedSchemaVersion < 3 && account.producedThisShift() > 0) {
+                        // Fail closed for the one migration shift; the next shift resets all role counters.
+                        account.setRoleProduction(ResidentRole.FISHER.storageKey(), account.producedThisShift());
+                    }
                     ConfigurationSection inventory = section.getConfigurationSection("inventory");
                     if (inventory != null) {
                         for (String itemKey : inventory.getKeys(false)) {
@@ -126,6 +245,16 @@ final class NpcEconomyStore {
             Map<String, Object> entry = new LinkedHashMap<>();
             raw.forEach((key, value) -> entry.put(String.valueOf(key), value));
             journal.add(entry);
+            Object id = entry.get("id");
+            String type = String.valueOf(entry.get("type"));
+            if (id != null && !String.valueOf(id).isBlank()
+                    && (type.equals("SALE") || type.equals("VISITOR_SALE"))) {
+                transactionIds.add(String.valueOf(id));
+            }
+        }
+        trimJournal();
+        if (file.exists() && loadedSchemaVersion < SCHEMA_VERSION) {
+            save();
         }
     }
 }

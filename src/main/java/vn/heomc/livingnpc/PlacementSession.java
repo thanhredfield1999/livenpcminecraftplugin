@@ -7,13 +7,20 @@ record PlacementSession(
         UUID residentUuid,
         String profileId,
         String villageId,
+        VillageWorkZoneType workZoneType,
         int plotRadius,
         long expiresAtMillis) {
 
     PlacementSession(
             PlacementType type, UUID residentUuid, String profileId,
             int plotRadius, long expiresAtMillis) {
-        this(type, residentUuid, profileId, null, plotRadius, expiresAtMillis);
+        this(type, residentUuid, profileId, null, null, plotRadius, expiresAtMillis);
+    }
+
+    PlacementSession(
+            PlacementType type, UUID residentUuid, String profileId, String villageId,
+            int plotRadius, long expiresAtMillis) {
+        this(type, residentUuid, profileId, villageId, null, plotRadius, expiresAtMillis);
     }
 
     boolean expired(long nowMillis) {

@@ -11,6 +11,7 @@ final class NpcAccount {
     private int producedThisShift;
     private long shiftKey = Long.MIN_VALUE;
     private long lastSaleShift = Long.MIN_VALUE;
+    private final Map<String, Integer> roleProduction = new LinkedHashMap<>();
 
     NpcAccount(UUID npcUuid) {
         this.npcUuid = npcUuid;
@@ -23,6 +24,7 @@ final class NpcAccount {
         copy.producedThisShift = producedThisShift;
         copy.shiftKey = shiftKey;
         copy.lastSaleShift = lastSaleShift;
+        copy.roleProduction.putAll(roleProduction);
         return copy;
     }
 
@@ -76,6 +78,23 @@ final class NpcAccount {
 
     void setShiftKey(long shiftKey) {
         this.shiftKey = shiftKey;
+    }
+
+    int roleProduction(String role) {
+        return roleProduction.getOrDefault(role, 0);
+    }
+
+    void setRoleProduction(String role, int amount) {
+        if (amount <= 0) roleProduction.remove(role);
+        else roleProduction.put(role, amount);
+    }
+
+    Map<String, Integer> roleProduction() {
+        return Map.copyOf(roleProduction);
+    }
+
+    void clearRoleProduction() {
+        roleProduction.clear();
     }
 
     long lastSaleShift() {

@@ -23,13 +23,14 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
     @Override
     public boolean onCommand(CommandSender sender, Command command, String label, String[] args) {
         if (args.length == 0) {
-            help(sender, 1);
+            list(sender);
             return true;
         }
         switch (args[0].toLowerCase()) {
-            case "help", "guide" -> help(sender, parsePage(args));
+            case "help", "guide" -> help(sender);
             case "create" -> create(sender, args);
             case "adopt", "tiepnhan" -> adopt(sender, args);
+            case "assignvillage", "ganlang" -> assignVillage(sender, args);
             case "lang", "village" -> village(sender, args);
             case "setkho", "setstorage" -> setStorage(sender, args);
             case "setdiem", "setsocial" -> setSocialPoint(sender, args);
@@ -38,62 +39,34 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             case "sethome" -> setHome(sender, args);
             case "setplot" -> setPlot(sender, args);
             case "status" -> status(sender, args);
-            case "combat", "chien" -> combat(sender, args);
             case "remove" -> remove(sender, args);
             case "reload" -> reload(sender);
             default -> {
                 error(sender, "Lệnh không tồn tại: " + args[0]);
-                help(sender, 1);
+                help(sender);
             }
         }
         return true;
     }
 
-    private void help(CommandSender sender, int page) {
-        int selected = Math.clamp(page, 1, 3);
-        sender.sendMessage(Component.text("Hướng dẫn LivingNPC ", NamedTextColor.GOLD)
-                .append(Component.text("[" + selected + "/3]", NamedTextColor.YELLOW)));
-        switch (selected) {
-            case 1 -> {
-                guide(sender, "/livingnpc list", "Mở bảng quản lý NPC và kho tổng.");
-                guide(sender, "/livingnpc lang tao <id> <tên>", "Tạo một làng mới tại vị trí đang đứng.");
-                guide(sender, "/livingnpc tiepnhan <npc-id> <làng-id>", "Đưa NPC Citizens có sẵn vào một làng.");
-                guide(sender, "/livingnpc setkho <làng-id>", "Nhìn vào rương hoặc thùng rồi đặt kho giao hàng.");
-                guide(sender, "/livingnpc setdiem <làng-id> <cho|ngamcanh>", "Đặt điểm sinh hoạt tại vị trí đứng.");
-                guide(sender, "/livingnpc create <tên>", "Tạo nông dân mới tại vị trí hiện tại.");
-                guide(sender, "/livingnpc sethome <id>", "Đặt nhà NPC tại vị trí hiện tại.");
-                guide(sender, "/livingnpc setplot <id> [bán-kính]", "Gán vùng ruộng có giới hạn.");
-                guide(sender, "/livingnpc cancel", "Hủy thao tác đang chờ chọn vị trí.");
-            }
-            case 2 -> {
-                guide(sender, "/livingnpc status <id>", "Xem nghề, lịch, hoạt động và khu làm việc.");
-                guide(sender, "/livingnpc combat", "Thiết lập và điều khiển vùng ải Zombie riêng.");
-                guide(sender, "/livingnpc reload", "Đọc lại các file cấu hình.");
-                guide(sender, "/livingnpc remove <id>", "Xóa vĩnh viễn NPC do LivingNPC quản lý.");
-                sender.sendMessage(Component.text("Thu hoạch, trồng cây và bán kho đều TẮT mặc định để an toàn.", NamedTextColor.RED));
-                sender.sendMessage(Component.text("Tắt Trí tuệ NPC để dừng toàn bộ di chuyển và hành vi.", NamedTextColor.GRAY));
-            }
-            case 3 -> {
-                sender.sendMessage(Component.text("Kho tổng: 512 vật phẩm, tối đa 32 sản phẩm mỗi NPC trong một ca.", NamedTextColor.GRAY));
-                sender.sendMessage(Component.text("Tiền thị trấn tách khỏi Vault/Essentials; giá nằm trong prices.yml.", NamedTextColor.GRAY));
-                sender.sendMessage(Component.text("NPC chỉ tìm mục tiêu trong khu được giao, không quét toàn thế giới.", NamedTextColor.GRAY));
-                sender.sendMessage(Component.text("Nhấp phải NPC để nói chuyện bằng câu thoại tiếng Việt.", NamedTextColor.GRAY));
-            }
-            default -> throw new IllegalStateException("Unexpected guide page");
-        }
-        sender.sendMessage(Component.text("Dùng ", NamedTextColor.DARK_GRAY)
-                .append(commandLink("/livingnpc help " + (selected == 3 ? 1 : selected + 1), "Trang tiếp theo")));
-    }
-
-    private int parsePage(String[] args) {
-        if (args.length < 2) {
-            return 1;
-        }
-        try {
-            return Integer.parseInt(args[1]);
-        } catch (NumberFormatException exception) {
-            return 1;
-        }
+    private void help(CommandSender sender) {
+        sender.sendMessage(Component.text("LivingNPC - Hướng dẫn quản lý", NamedTextColor.GOLD));
+        guide(sender, "/lnpc", "Mở bảng quản lý làng và NPC.");
+        sender.sendMessage(Component.text("Thêm một NPC Citizens có sẵn:", NamedTextColor.YELLOW));
+        guide(sender, "/npc list", "Xem ID các NPC Citizens.");
+        guide(sender, "/lnpc tiepnhan <npc-id> <làng-id>", "Đưa NPC Citizens vào LivingNPC và làng đã chọn.");
+        sender.sendMessage(Component.text("Ví dụ: /lnpc tiepnhan 8 stillcliff_1", NamedTextColor.DARK_GRAY));
+        sender.sendMessage(Component.text("Tạo NPC LivingNPC mới tại vị trí đang đứng:", NamedTextColor.YELLOW));
+        guide(sender, "/lnpc create <tên>", "Tạo NPC mới bằng Citizens.");
+        guide(sender, "/lnpc ganlang <npc-id> <làng-id>", "Gán NPC vừa tạo vào một làng.");
+        sender.sendMessage(Component.text("Thiết lập sau khi thêm:", NamedTextColor.YELLOW));
+        sender.sendMessage(Component.text("1. Shift + click phải NPC để mở setup.", NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("2. Chọn nghề, đặt Nhà và khu làm việc tương ứng.", NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("3. Bật NPC hoạt động khi cấu hình đã sẵn sàng.", NamedTextColor.GREEN));
+        guide(sender, "/lnpc status <npc-id>", "Xem nghề, lịch và phần cấu hình còn thiếu.");
+        guide(sender, "/lnpc cancel", "Hủy thao tác đang chờ chọn block.");
+        sender.sendMessage(Component.text("Nếu chưa có làng:", NamedTextColor.YELLOW));
+        guide(sender, "/lnpc lang tao <id> <tên hiển thị>", "Tạo làng tại vị trí đang đứng.");
     }
 
     private void guide(CommandSender sender, String command, String description) {
@@ -109,18 +82,7 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
     }
 
     private void create(CommandSender sender, String[] args) {
-        Player player = requirePlayer(sender);
-        if (player == null || args.length < 2) {
-            error(sender, "Cách dùng: /livingnpc create <tên>");
-            return;
-        }
-        String name = String.join(" ", Arrays.copyOfRange(args, 1, args.length));
-        NPC npc = plugin.manager().create(ResidentProfile.custom(name), player.getLocation());
-        if (npc == null) {
-            error(sender, "Citizens không thể tạo nông dân tại vị trí này.");
-            return;
-        }
-        success(sender, "Đã tạo nông dân " + npc.getId() + " (" + npc.getName() + "). Hãy gán ruộng bằng /livingnpc setplot " + npc.getId() + " [bán-kính].");
+        error(sender, "Hãy dùng /lnpc, chọn làng và Tạo NPC; hệ thống bắt buộc chọn đúng block giường.");
     }
 
     private void adopt(CommandSender sender, String[] args) {
@@ -131,6 +93,16 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
                             + ". Dùng /livingnpc status " + id + " để xem còn thiếu gì.");
         } else if (id != null) {
             error(sender, "Cách dùng: /livingnpc tiepnhan <npc-id> <làng-id>");
+        }
+    }
+
+    private void assignVillage(CommandSender sender, String[] args) {
+        Integer id = parseId(sender, args, "/livingnpc ganlang <npc-id> <làng-id>");
+        if (id != null && args.length >= 3) {
+            result(sender, plugin.manager().assignVillage(id, args[2]),
+                    "Đã gán NPC " + id + " vào làng " + args[2] + ".");
+        } else if (id != null) {
+            error(sender, "Cách dùng: /livingnpc ganlang <npc-id> <làng-id>");
         }
     }
 
@@ -226,10 +198,26 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             error(sender, "NPC này chưa được LivingNPC quản lý. Dùng /livingnpc tiepnhan <id>.");
             return;
         }
+        if (phase != FarmerPhase.GOING_TO_BED && phase != FarmerPhase.SLEEPING) {
+            if (farmer.activeRole() == ResidentRole.FISHER) {
+                phase = plugin.fishers().phase(farmer.npcUuid());
+            } else if (CivilProfessionRuntime.zoneFor(farmer.activeRole()) != null) {
+                phase = plugin.civilProfessions().phase(farmer.npcUuid());
+            }
+        }
         sender.sendMessage(Component.text("Cư dân " + id + ": " + farmer.profile().name(), NamedTextColor.GOLD));
         sender.sendMessage(Component.text(
                 farmer.profile().title() + " | giới tính=" + farmer.profile().gender()
                         + " | nghề đang chạy=" + farmer.activeRole().storageKey(), NamedTextColor.GRAY));
+        sender.sendMessage(Component.text("UUID: " + farmer.npcUuid(), NamedTextColor.DARK_GRAY));
+        sender.sendMessage(Component.text(
+                "Hồ sơ nhân vật=" + (farmer.enabled(BehaviorFlag.CHARACTER_PROFILE) ? "BẬT" : "TẮT"),
+                NamedTextColor.GRAY));
+        if (farmer.enabled(BehaviorFlag.CHARACTER_PROFILE)) {
+            for (String line : ResidentPresentation.characterLines(farmer.profile())) {
+                sender.sendMessage(Component.text(line, NamedTextColor.GRAY));
+            }
+        }
         for (ResidentRole role : farmer.profile().roles().stream().sorted().toList()) {
             RoleProgress progress = farmer.progress(role);
             ResidentSchedule schedule = farmer.schedule(
@@ -252,61 +240,41 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
                                 plugin.economy().villageAccount(farmer.villageId()).balanceMinor() / 100.0)
                         + " ruộng=" + (farmer.plot() == null ? "chưa gán" : farmer.plot().world())
                         + " bán kính=" + farmer.plotRadius(), NamedTextColor.GRAY));
-        sender.sendMessage(Component.text("Sẵn sàng: " + plugin.manager().readiness(farmer.npcUuid()),
-                plugin.manager().ready(farmer.npcUuid()) ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
-    }
-
-    private void combat(CommandSender sender, String[] args) {
-        Player player = requirePlayer(sender);
-        if (player == null) return;
-        if (args.length < 2) {
-            error(sender, "Dùng: /livingnpc combat tao|goc1|goc2|rutlui|bat|tat|status ...");
-            return;
-        }
-        String action = args[1].toLowerCase();
-        if (action.equals("tao")) {
-            if (args.length < 6) {
-                error(sender, "Cách dùng: /livingnpc combat tao <ải-id> <làng-id> <cung-id> <kiếm-id>");
-                return;
-            }
-            try {
-                result(sender, plugin.combat().create(args[2], args[3], Integer.parseInt(args[4]),
-                                Integer.parseInt(args[5]), player.getLocation()),
-                        "Đã tạo ải " + args[2] + "; vị trí hiện tại là điểm rút lui.");
-            } catch (NumberFormatException exception) {
-                error(sender, "ID NPC phải là số.");
-            }
-            return;
-        }
-        if (args.length < 3) {
-            error(sender, "Thiếu ID ải.");
-            return;
-        }
-        if (action.equals("status")) {
-            CombatArena arena = plugin.combat().arena(args[2]);
-            if (arena == null) {
-                error(sender, "Không tìm thấy ải " + args[2] + ".");
-                return;
-            }
-            sender.sendMessage(Component.text("Ải " + arena.id()
-                    + " | làng=" + arena.villageId()
-                    + " | cấu hình=" + (arena.configured() ? "ĐỦ" : "THIẾU")
-                    + " | hoạt động=" + (arena.active() ? "BẬT" : "TẮT")
-                    + " | kill lượt này=" + arena.killsThisRun() + "/32", NamedTextColor.GOLD));
-            return;
-        }
-        boolean successful = switch (action) {
-            case "goc1" -> plugin.combat().setCorner(args[2], 1, player.getLocation());
-            case "goc2" -> plugin.combat().setCorner(args[2], 2, player.getLocation());
-            case "rutlui" -> plugin.combat().setRetreat(args[2], player.getLocation());
-            case "bat" -> plugin.combat().start(args[2]);
-            case "tat" -> plugin.combat().stop(args[2]);
-            default -> false;
-        };
-        result(sender, successful, "Đã cập nhật ải " + args[2] + " (" + action + ").");
+        String readiness = plugin.manager().activeRoleReadiness(farmer.npcUuid());
+        sender.sendMessage(Component.text("Sẵn sàng: " + readiness,
+                readiness.startsWith("SẴN SÀNG") ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+        ProfessionDiagnostic diagnostic = plugin.professionMonitor().diagnostic(farmer.npcUuid());
+        sender.sendMessage(Component.text("Theo dõi: " + diagnostic.message(), switch (diagnostic.level()) {
+            case OK -> NamedTextColor.GREEN;
+            case WAITING -> NamedTextColor.YELLOW;
+            case ERROR -> NamedTextColor.RED;
+        }));
     }
 
     private String activityDescription(ResidentRole role, FarmerPhase phase) {
+        if (role == ResidentRole.RESIDENT) {
+            return "đang sinh hoạt quanh nhà";
+        }
+        if (role == ResidentRole.FISHER) {
+            return switch (phase == null ? FarmerPhase.INACTIVE : phase) {
+                case GOING_TO_FISHING_SPOT -> "đang đi tới điểm câu";
+                case CASTING_LINE -> "đang thả câu";
+                case WAITING_FOR_BITE -> "đang chờ cá cắn câu";
+                case REELING_IN -> "đang kéo dây câu";
+                case RESTING -> "đang nghỉ giữa các lượt câu";
+                default -> "đang chờ ca hoặc điểm câu";
+            };
+        }
+        if (CivilProfessionRuntime.zoneFor(role) != null) {
+            return switch (phase == null ? FarmerPhase.INACTIVE : phase) {
+                case GOING_TO_WORK_STATION -> "đang đi tới trạm nghề";
+                case PRODUCING -> "đang sản xuất";
+                case PATROLLING -> "đang tuần tra";
+                case ALERTING -> "đang báo động";
+                case RESTING -> "đang nghỉ giữa các lượt";
+                default -> "đang chờ ca hoặc trạm nghề";
+            };
+        }
         if (role != ResidentRole.FARMER) {
             return "runtime chưa được cấu hình";
         }
@@ -320,16 +288,31 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             case GOING_TO_STORAGE -> "đang mang nông sản tới rương kho";
             case DEPOSITING -> "đang giao nông sản vào kho làng";
             case RETURNING_TO_PLOT -> "đang quay lại ruộng";
+            case LUNCH_BREAK -> "đang nghỉ trưa";
             case GOING_TO_MARKET -> "đang đi tới chợ";
             case SHOPPING -> "đang xem hàng ở chợ";
             case GOING_TO_SCENIC -> "đang đi tới điểm ngắm cảnh";
             case SOCIALIZING -> "đang trò chuyện và ngắm cảnh";
+            case GOING_TO_SEAT -> "đang đi tới ghế";
+            case SITTING_REST -> "đang ngồi nghỉ";
+            case SITTING_DINING -> "đang ngồi ăn";
+            case STANDING_UP -> "đang đứng dậy";
             case RESTING -> "đang nghỉ ngắn";
             case WATCHING_PLAYER -> "đang quan sát người chơi";
             case LOOKING_AROUND -> "đang nhìn xung quanh";
             case WANDERING -> "đang đi dạo";
             case GOING_HOME -> "đang về nhà";
+            case GOING_TO_BED -> "đang đi tới giường";
+            case SLEEPING -> "đang ngủ";
             case SHELTERING -> "đang tránh nguy hiểm";
+            case GOING_TO_FISHING_SPOT, CASTING_LINE, WAITING_FOR_BITE, REELING_IN -> "đang câu cá";
+            case GOING_TO_WORK_STATION -> "đang đi tới trạm nghề";
+            case PRODUCING -> "đang sản xuất";
+            case PATROLLING -> "đang tuần tra";
+            case ALERTING -> "đang báo động";
+            case GOING_TO_STALL -> "đang đi tới quầy";
+            case OPENING_STALL -> "đang mở quầy";
+            case SERVING -> "đang phục vụ khách";
         };
     }
 
@@ -372,13 +355,10 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
     public List<String> onTabComplete(CommandSender sender, Command command, String alias, String[] args) {
         if (args.length == 1) {
             String prefix = args[0].toLowerCase();
-            return List.of("help", "guide", "list", "cancel", "create", "lang", "tiepnhan", "setkho", "setdiem", "sethome", "setplot", "status", "combat", "remove", "reload").stream()
+            return List.of(
+                            "list", "help", "create", "tiepnhan", "ganlang",
+                            "cancel", "lang", "status", "remove", "reload").stream()
                     .filter(value -> value.startsWith(prefix))
-                    .toList();
-        }
-        if (args.length == 2 && (args[0].equalsIgnoreCase("help") || args[0].equalsIgnoreCase("guide"))) {
-            return List.of("1", "2", "3").stream()
-                    .filter(value -> value.startsWith(args[1]))
                     .toList();
         }
         return List.of();

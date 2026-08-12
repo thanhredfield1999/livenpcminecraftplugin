@@ -65,6 +65,20 @@ record FarmerDefinition(
         return new FarmerDefinition(npcUuid, villageId, home, plot, plotRadius, profile, activeRole, progress, schedules, updated);
     }
 
+    FarmerDefinition withFarmerEnabled(boolean enabled) {
+        EnumSet<BehaviorFlag> updated = behaviors.clone();
+        for (BehaviorFlag behavior : EnumSet.of(
+                BehaviorFlag.MASTER, BehaviorFlag.HARVEST, BehaviorFlag.PLANT)) {
+            if (enabled) {
+                updated.add(behavior);
+            } else {
+                updated.remove(behavior);
+            }
+        }
+        return new FarmerDefinition(
+                npcUuid, villageId, home, plot, plotRadius, profile, activeRole, progress, schedules, updated);
+    }
+
     FarmerDefinition withHome(StoredLocation updatedHome) {
         return new FarmerDefinition(npcUuid, villageId, updatedHome, plot, plotRadius, profile, activeRole, progress, schedules, behaviors);
     }
@@ -73,12 +87,22 @@ record FarmerDefinition(
         return new FarmerDefinition(npcUuid, villageId, home, updatedPlot, updatedRadius, profile, activeRole, progress, schedules, behaviors);
     }
 
+    FarmerDefinition withVillage(String updatedVillageId) {
+        return new FarmerDefinition(npcUuid, updatedVillageId, home, plot, plotRadius, profile, activeRole, progress, schedules, behaviors);
+    }
+
     FarmerDefinition withProfile(ResidentProfile updatedProfile) {
         return new FarmerDefinition(npcUuid, villageId, home, plot, plotRadius, updatedProfile, activeRole, progress, schedules, behaviors);
     }
 
     FarmerDefinition withActiveRole(ResidentRole updatedRole) {
-        return new FarmerDefinition(npcUuid, villageId, home, plot, plotRadius, profile, updatedRole, progress, schedules, behaviors);
+        ResidentProfile updatedProfile = profile.withRole(updatedRole);
+        java.util.EnumMap<ResidentRole, RoleProgress> updatedProgress = new java.util.EnumMap<>(ResidentRole.class);
+        updatedProgress.putAll(progress);
+        updatedProgress.putIfAbsent(updatedRole, new RoleProgress(0L));
+        return new FarmerDefinition(
+                npcUuid, villageId, home, plot, plotRadius, updatedProfile,
+                updatedRole, updatedProgress, schedules, behaviors);
     }
 
     FarmerDefinition withSchedule(ResidentRole role, ResidentSchedule updated) {

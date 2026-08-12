@@ -52,7 +52,12 @@ final class CropScanner {
         int radius = Math.min(3, plotRadius);
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
-                Material material = emptyCropBlock.getRelative(x, 0, z).getType();
+                Block sample = emptyCropBlock.getRelative(x, 0, z);
+                if (Math.abs(sample.getX() - center.getBlockX()) > plotRadius
+                        || Math.abs(sample.getZ() - center.getBlockZ()) > plotRadius) {
+                    continue;
+                }
+                Material material = sample.getType();
                 if (ALLOWED_CROPS.contains(material)) {
                     counts.merge(material, 1, Integer::sum);
                 }

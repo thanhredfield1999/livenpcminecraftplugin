@@ -8,8 +8,8 @@ authors: [HeoMC]
 description: Cư dân làng sinh hoạt theo lịch, sử dụng Citizens.
 commands:
   livingnpc:
-    description: Quản lý các cư dân LivingNPC.
-    usage: /livingnpc help [1-3] | /livingnpc list
+    description: Quản lý cư dân LivingNPC; dùng /lnpc help để xem cách thêm NPC.
+    usage: /lnpc help
     aliases: [lnpc]
     permission: livingnpc.admin
 permissions:

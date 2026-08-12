@@ -44,3 +44,15 @@ profiles:
     title: Thợ rèn
     roles: [crafter]
     skin: ''
+  roland_deepwell:
+    name: Roland
+    gender: male
+    title: Thợ mỏ
+    roles: [miner]
+    skin: ''
+  elara_watch:
+    name: Elara
+    gender: female
+    title: Người gác làng
+    roles: [security]
+    skin: ''

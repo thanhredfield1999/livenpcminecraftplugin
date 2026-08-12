@@ -13,6 +13,9 @@ final class ResidentMenu implements InventoryHolder {
         VILLAGE_LIST,
         RESIDENT_LIST,
         TOWN_STORE,
+        ACTIVITY_LIST,
+        VILLAGE_WORK_ZONES,
+        SEAT_LIST,
         RESIDENT_DETAIL,
         ROLE_LIST,
         ROLE_SCHEDULE,
@@ -28,6 +31,8 @@ final class ResidentMenu implements InventoryHolder {
     private final Map<Integer, String> profilesBySlot = new HashMap<>();
     private final Map<Integer, ResidentRole> rolesBySlot = new HashMap<>();
     private final Map<Integer, String> villagesBySlot = new HashMap<>();
+    private final Map<Integer, VillageWorkZoneType> workZonesBySlot = new HashMap<>();
+    private final Map<Integer, String> seatsBySlot = new HashMap<>();
     private final ResidentRole role;
     private final Inventory inventory;
 
@@ -41,6 +46,10 @@ final class ResidentMenu implements InventoryHolder {
 
     ResidentMenu(Type type, UUID residentUuid, String villageId, int size, Component title) {
         this(type, residentUuid, villageId, null, size, title);
+    }
+
+    ResidentMenu(Type type, String villageId, ResidentRole role, int size, Component title) {
+        this(type, null, villageId, role, size, title);
     }
 
     private ResidentMenu(Type type, UUID residentUuid, String villageId, ResidentRole role, int size, Component title) {
@@ -85,6 +94,14 @@ final class ResidentMenu implements InventoryHolder {
 
     Map<Integer, String> villagesBySlot() {
         return villagesBySlot;
+    }
+
+    Map<Integer, VillageWorkZoneType> workZonesBySlot() {
+        return workZonesBySlot;
+    }
+
+    Map<Integer, String> seatsBySlot() {
+        return seatsBySlot;
     }
 
     @Override

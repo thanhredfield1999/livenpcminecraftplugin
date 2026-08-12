@@ -17,11 +17,12 @@ Paper plugin MVP for persistent Citizens farmers. It is intentionally separate f
 - Farmers visibly face crops, hold seeds/tools and swing before changing blocks.
 - Before acting, farmers walk to a safe adjacent block, crouch briefly to inspect the crop, then use the visible tool.
 - During idle work periods they take uneven breaks, look around, watch a nearby visible player or walk a short route around the plot.
+- Farmers take one configurable lunch break around the middle of their assigned shift, return near home without ending the shift, then naturally walk back to the plot and resume work.
 - Nearby hostile mobs interrupt all lower-priority behavior and send the farmer home. Rain and the end of the work schedule do the same.
 - Ambient timing and action selection are randomized per resident, preventing synchronized identical movement.
-- Mature crops reset to age zero and empty farmland is planted with wheat. Enabled harvest output enters a bounded private NPC inventory; no generated item entities are dropped.
+- Mature wheat, carrot, potato and beetroot crops reset atomically to age zero. Empty farmland uses the dominant crop inside the assigned plot. Output enters the village virtual store; no generated item entities are dropped.
 
-The MVP does not fake sleeping, sitting, eating or social conversations. Those actions require assigned beds, chairs, meeting places and storage so their animations correspond to real locations rather than playing arbitrary poses.
+LivingNPC uses assigned beds for sleep and village seats for rest and lunch. A configured Stair is a rest seat; a solid block directly in front of the Stair classifies it as a dining seat. Citizens owns the sitting helper entity through `SitTrait`, while LivingNPC reserves the seat, locks the NPC to its Stair direction and releases it before the NPC resumes work.
 
 ## Build
 
@@ -33,74 +34,74 @@ Output: `build/libs/living-npc-0.5.0-SNAPSHOT.jar`.
 
 Important behavior controls are in `plugins/LivingNPC/config.yml`: `activation-range`, `danger-range`, the work window, bounded scan interval, inspection duration, ambient timing/player notice/wander radius and Citizens navigation parameters.
 
-## Setup
+Farmer daily-plan controls are under `farmer.daily-plan`. Lunch is enabled by default and lasts `1000` Minecraft ticks (one in-game hour). The break is centered inside each farmer's configured schedule, including custom schedules that cross midnight. Lunch does not trigger end-of-shift sales or reset production quota.
 
-1. Install matching Citizens and put the LivingNPC jar in `plugins/`.
-2. Restart Paper. Do not use PlugMan or a plugin hot-loader.
-3. Stand at the resident's home and run `/livingnpc create <name>`.
-4. Stand near the center height of the farm and run `/livingnpc setplot <npc-id> [radius]`.
-5. Use `/livingnpc status <npc-id>` to inspect its current phase.
+## Quick Setup
+
+After installing the jar and restarting Paper, use only `/lnpc` for normal setup:
+
+1. Open a village and click `Kho làng`, then right-click its chest or barrel.
+2. Open a worker and click `Khu ruộng`, then right-click the plot center.
+3. Choose the NPC job, then click `NPC hoạt động: BẬT`.
+
+While the plugin is waiting for a right-clicked block, type `/lnpc cancel` in chat to cancel the placement.
+
+Each NPC has a job menu. `Người dân` provides normal village wandering and ambient behavior without production. `Nông dân` uses the configured plot and storage. `Ngư dân`, `Chăn nuôi`, `Đầu bếp`, `Thợ chế tạo`, `Thợ mỏ` and `Bảo vệ` have dedicated bounded runtimes and require their village work zones. `NPC hoạt động` is the shared on/off switch for the selected job.
+
+Village infrastructure is configured from `Khu nghề & khách vãng lai`:
+
+- Woodworking requires a stonecutter and crafting table.
+- Cooking requires a furnace and crafting table.
+- Crafting requires a crafting table, smithing table and any usable anvil variant.
+- Stations must be inside the bounded validation area around the selected center before the zone can be saved.
+- Ranching requires a hay bale plus any fence or fence gate. Ranchers consume village virtual-store food to put two ready adults into vanilla love mode: wheat for cows/sheep, wheat seeds for chickens and carrots for pigs.
+- Ranch zones are shared village infrastructure rather than per-NPC assignments. Cow, sheep, chicken, pig and rabbit breeding is supported; rabbits use carrots. One rancher owns the zone operation at a time, and overlapping ranch zones from another village are rejected so two NPCs cannot select the same herd concurrently.
+- Each village has a configurable per-species animal limit, default 8. Above the limit, a rancher handles at most 2 surplus adults per cycle while preserving at least two adult breeders. Actual mob death drops are captured into village virtual storage without duplicating ground drops.
+- An idle rancher patrols safe reachable points inside the bounded ranch instead of standing at the zone center. Animals observed inside the ranch are remembered for the current server session; if one escapes within the bounded recovery radius, the rancher can visibly lead that known herd member back without teleporting or claiming unrelated wild animals. Animals already leashed by a player are never taken.
+- Citizens `DoorExaminer` owns wooden-door and fence-gate traversal. It treats gates as pathable, opens them when the NPC reaches them and closes them after passage; LivingNPC does not keep a second timer that leaves livestock gates open.
+- `Ghế nghỉ & bàn ăn` stores shared village seats. Click `Thêm ghế`, then right-click a Stair. A Stair without a solid block in front becomes a rest seat; one facing a solid table block becomes a dining seat. The Stair direction fixes the NPC's seated yaw.
+- Villages can have unlimited delivery chests/barrels. Workers sort valid points by distance, require safe standing space and a real Citizens path, skip blocked/high/unloaded points, and try the next location when navigation fails. Stuck teleport is disabled.
+
+`Khách vãng lai` is a temporary, non-selectable NPC role. The admin must set both `Cổng khách` and `Điểm chợ`. Guests spawn exactly at that gate, walk to the market, buy bounded quantities of priced virtual-store goods using their own generated wallet, credit the village balance, walk back to the same gate and are destroyed only after arriving. Guests are not persisted across restarts.
+
+If no village exists yet, create it once with `/lnpc lang tao <id> <tên>`. All older commands remain available for advanced administration but are not part of the normal workflow.
 
 ## Villages
 
-LivingNPC supports multiple independent villages in the same world and across different worlds. Each village has its own NPC list, delivery chest, 512-item virtual store, balance, market point and scenic point.
+LivingNPC supports multiple independent villages in the same world and across different worlds. Each village has its own NPC list, delivery chest, virtual store, balance, market point and scenic point. Storage is temporarily unlimited by default through `economy.unlimited-storage: true`; per-shift production quotas still prevent runaway production. Set it to `false` later to restore `economy.inventory-capacity`.
 
-```text
-/livingnpc lang tao <id> <tên hiển thị>
-/livingnpc tiepnhan <npc-id> <làng-id>
-/livingnpc setkho <làng-id>
-/livingnpc setdiem <làng-id> cho
-/livingnpc setdiem <làng-id> ngamcanh
-```
-
-`setkho` uses the chest, trapped chest or barrel the player is looking at within six blocks. Social points use the player's current position. `/livingnpc list` opens the village list first; selecting a village shows only that village's residents and store.
+`/lnpc` opens the village list. Selecting a village shows only that village's workers and virtual store. Storage, worker creation, home, plot, radius, work toggle and optional behavior settings are managed in the GUI.
 
 Farmer readiness requires a village, a valid delivery chest, an assigned plot, Master AI, Harvest and Plant. During a shift, a farmer detects the dominant nearby vanilla crop, harvests a mature crop, replants the same crop, walks to the village delivery chest, performs a visible deposit animation and returns to work. The chest is an animation/delivery point; the protected source of truth remains the village's virtual store.
 
+Mature wheat uses one harvested seed for immediate replanting. Surplus seeds are stored as `wheat_seeds` in the village virtual store, remain unsold without a configured price, and are reserved for a future rancher/chicken-care runtime.
+
 Outside work hours, two safe and idle NPCs from the same village may visit an assigned market or scenic point and use deterministic Vietnamese dialogue based on the point and time of day. Social activity is cancelled during storms or nearby monster danger. Gemini API dialogue remains disabled until gameplay is validated and a non-zero budget is explicitly configured.
 
-## Bounded Zombie Combat
+## Deferred Combat Source
 
-The source includes an admin-controlled combat arena runtime for a two-NPC team. It is fail-closed until an admin creates an arena, sets both cuboid corners and explicitly starts the run.
+Experimental combat source exists but is deferred. It is not shown in normal help or tab completion and should not be enabled or deployed as part of the farmer workflow.
 
-```text
-/livingnpc combat tao <arena-id> <village-id> <archer-id> <swordsman-id>
-/livingnpc combat goc1 <arena-id>
-/livingnpc combat goc2 <arena-id>
-/livingnpc combat rutlui <arena-id>
-/livingnpc combat status <arena-id>
-/livingnpc combat bat <arena-id>
-/livingnpc combat tat <arena-id>
-```
+Run `/lnpc` to open the GUI. `/lnpc help` shows the same three-step setup in chat.
 
-- The create command uses the admin's current position as the initial retreat point.
-- Combat targets only Zombies inside the configured cuboid; there is no global entity scan.
-- The archer deals 3 damage every 30 ticks. The swordsman deals 4 damage every 20 ticks.
-- The pair retreats together when either resident reaches 40% health, and they never die from a hit handled by this runtime.
-- Retreat has a 20-second timeout so failed Citizens navigation cannot lock either NPC permanently.
-- A confirmed NPC kill credits 1.00 to the private village account, with a maximum of 32 kills per run.
-- Farmer behavior is suspended while combat owns the pair. Existing hand equipment is restored when the run ends or the plugin shuts down.
-- Combat remains manual-only. It does not yet travel between worlds, discover villages, purchase upgrades or persist character biography.
-
-Run `/livingnpc` or `/livingnpc help [1-3]` at any time for an in-game guide. Guide commands are clickable suggestions with hover descriptions. `/livingnpc guide` is an alias for the same pages, and unknown subcommands automatically show page 1.
-
-The GUI is the primary administration workflow. Choosing Create, Home or Plot closes the menu and starts a two-minute position-selection session. Right-click a block with the main hand to save the position; the plugin then reopens the previous GUI and changes the item from `[PENDING]` to `[DONE]`. Use the GUI cancel item or `/livingnpc cancel` to leave placement mode. All original commands remain available for manual administration.
+The GUI is the primary administration workflow. Choosing Create, Home, Plot or Storage closes the menu and starts a two-minute position-selection session. Right-click a block with the main hand to save the position; the plugin then reopens the previous GUI. Use the GUI cancel item to leave placement mode. Older commands remain available only for advanced administration.
 
 ## Safety GUI
 
-Run `/livingnpc list` while standing at spawn to open the resident control panel.
+Run `/lnpc` to open the resident control panel.
 
 - The first page lists every managed resident with name, title, gender, Citizens ID, plot and safety state.
 - Click a resident to inspect and toggle every action independently.
-- `Master AI` stops navigation, tools, crop inspection and all behavior immediately.
-- `Harvest crops` and `Plant wheat` are **OFF by default**, including when older `farmers.yml` data is migrated. These are the only current actions that change world blocks.
+- `Làm nông` controls Master AI, harvest and planting together, so they cannot be left half-configured through the normal GUI.
+- `Làm nông` is **OFF by default** and can only be enabled after village, storage and plot are valid.
 - `Sell inventory` is also **OFF by default**. Enabling harvest does not automatically create money.
+- `Character profile` is optional and **OFF by default**. A resident can remain a plain worker without biography, relationships or special dialogue.
 - Toggle changes are written to `plugins/LivingNPC/farmers.yml` immediately.
 - The create button opens the medieval profile library and spawns the selected supported resident where the admin is standing.
 
 ### Multi-role schedule GUI
 
-1. Run `/livingnpc list` and click a resident.
+1. Run `/lnpc` and click a resident.
 2. Click `Nghề và lịch làm việc`.
 3. Click the role whose schedule you want to edit.
 4. Left-click a start/end control to move it one hour later; right-click to move it one hour earlier. Hold Shift to change two hours.
@@ -110,7 +111,7 @@ The GUI shows normal clock time as `HH:mm`; admins do not need to calculate Mine
 
 ## Medieval Profiles And Skins
 
-Edit `plugins/LivingNPC/profiles.yml`, then run `/livingnpc reload`. Each entry supports:
+Edit `plugins/LivingNPC/profiles.yml`, then run `/lnpc reload`. Each entry supports:
 
 ```yaml
 profiles:
@@ -124,7 +125,7 @@ profiles:
 
 Citizens fetches the skin belonging to the configured Minecraft Java username. The plugin does not download, bundle or redistribute skin files. Profile IDs should be unique; one profile can be active on only one managed resident. A profile can declare multiple roles. LivingNPC persists one active role plus separate XP, level and schedule data for every assigned role; only one role scheduler may control an NPC at a time.
 
-Legacy `profession` values are migrated when loaded. Farmer is currently the only complete world-action module. Fisher, cook, crafter, miner, rancher, security and training roles remain fail-closed until their required station, zone and safety modules are configured.
+Legacy `profession` values are migrated when loaded. Farmer, fisher, cook, crafter, miner, rancher and security roles run only after their required station, zone and safety checks pass. Training roles remain fail-closed.
 
 ## Private NPC Economy
 
@@ -149,7 +150,7 @@ npc-prices:
   beetroot: 2.5
 ```
 
-The GUI and `/livingnpc status <id>` show private balance, inventory usage and per-shift output.
+The GUI shows village balance, inventory usage and per-shift output. `/lnpc status <id>` is available for detailed diagnostics.
 
 ## Work Targets
 
@@ -169,7 +170,7 @@ The gateway remains disabled by default and uses deterministic fallback dialogue
 
 Configured caps are 10 requests/minute globally and one request per NPC per five minutes. Never put the API key in YAML, source, logs or the jar. The network SDK implementation is deferred until a restricted key and non-zero hard monthly budget are installed.
 
-Commands require `livingnpc.admin` (operator by default). `/livingnpc remove <npc-id>` permanently removes both the LivingNPC record and Citizens NPC.
+Commands require `livingnpc.admin` (operator by default). Permanent NPC removal is available from the GUI confirmation screen.
 
 ## Research references
 

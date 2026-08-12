@@ -7,8 +7,9 @@ import org.bukkit.Material;
 enum BehaviorFlag {
     MASTER("Trí tuệ NPC", Material.REDSTONE_TORCH, true, "Cho phép NPC thực hiện các hành vi đã bật."),
     HARVEST("Thu hoạch", Material.IRON_HOE, false, "Thu hoạch cây chín. Hành động này thay đổi block."),
-    PLANT("Trồng lúa mì", Material.WHEAT_SEEDS, false, "Trồng lúa mì trên đất trống. Hành động này thay đổi block."),
+    PLANT("Gieo trồng", Material.WHEAT_SEEDS, false, "Trồng lại cây trên đất trống. Hành động này thay đổi block."),
     SELL_INVENTORY("Bán hàng trong kho", Material.EMERALD, false, "Bán hàng có giá trong kho tổng khi hết ca."),
+    CHARACTER_PROFILE("Hồ sơ nhân vật", Material.WRITABLE_BOOK, false, "Hiện câu chuyện, quan hệ và hội thoại riêng của NPC."),
     WANDER("Đi dạo", Material.LEATHER_BOOTS, true, "Đi lại ngắn quanh nhà hoặc khu làm việc."),
     WATCH_PLAYERS("Quan sát người chơi", Material.SPYGLASS, true, "Quay đầu nhìn người chơi ở gần."),
     LOOK_AROUND("Nhìn xung quanh", Material.COMPASS, true, "Thỉnh thoảng quan sát xung quanh khi rảnh."),

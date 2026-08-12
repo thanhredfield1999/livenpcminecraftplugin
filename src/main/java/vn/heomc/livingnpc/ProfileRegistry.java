@@ -47,8 +47,23 @@ final class ProfileRegistry {
                     section.getString("gender", "unspecified"),
                     section.getString("title", "Cư dân"),
                     roles,
-                    section.getString("skin", "")));
+                    section.getString("skin", ""),
+                    section.getString("biography", ""),
+                    section.getStringList("personality"),
+                    section.getString("preferred-weapon", ""),
+                    section.getStringList("goals"),
+                    Map.of()));
         }
+        addDefaultIfMissing(new ResidentProfile(
+                "roland_deepwell", "Roland", "male", "Thợ mỏ",
+                Set.of(ResidentRole.MINER), ""));
+        addDefaultIfMissing(new ResidentProfile(
+                "elara_watch", "Elara", "female", "Người gác làng",
+                Set.of(ResidentRole.SECURITY), ""));
+    }
+
+    private void addDefaultIfMissing(ResidentProfile profile) {
+        profiles.putIfAbsent(profile.id().toLowerCase(Locale.ROOT), profile);
     }
 
     ResidentProfile get(String id) {
@@ -57,7 +72,7 @@ final class ProfileRegistry {
 
     ResidentProfile firstUnused(Set<String> usedProfileIds) {
         return profiles.values().stream()
-                .filter(profile -> profile.hasRole(ResidentRole.FARMER))
+                .filter(profile -> profile.roles().stream().anyMatch(ResidentRole::implemented))
                 .filter(profile -> !usedProfileIds.contains(profile.id().toLowerCase(Locale.ROOT)))
                 .findFirst()
                 .orElse(null);

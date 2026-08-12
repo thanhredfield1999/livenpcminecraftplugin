@@ -3,6 +3,10 @@ activation-range: 48.0
 work-start-tick: 1000
 work-end-tick: 12000
 work-scan-interval-ticks: 100
+farmer:
+  daily-plan:
+    enabled: true
+    lunch-duration-ticks: 1000
 action-delay-min-ticks: 20
 action-delay-max-ticks: 60
 inspection-duration-ticks: 12
@@ -11,6 +15,7 @@ protection:
   require-worldguard: true
 economy:
   currency-name: Xu đồng
+  unlimited-storage: true
   inventory-capacity: 512
   output-per-action: 1
   max-output-per-shift: 32
@@ -31,7 +36,61 @@ ambient:
   duration-max-ticks: 80
   player-notice-range: 7.0
   wander-radius: 3
+resident:
+  patrol:
+    enabled: true
+    scan-interval-ticks: 600
+    scan-radius: 32
+    vertical-range: 4
+    max-cached-paths: 512
+    scan-blocks-per-tick: 256
+    min-target-distance: 8
+    max-target-distance: 24
+    trip-cooldown-min-ticks: 160
+    trip-cooldown-max-ticks: 360
+seating:
+  enabled: true
+  rest-duration-min-ticks: 100
+  rest-duration-max-ticks: 240
+  stand-duration-ticks: 8
 navigation:
   speed-modifier: 0.85
   distance-margin: 1.5
   retry-backoff-ticks: 60
+work-zones:
+  validation-radius: 6
+  validation-vertical-range: 3
+visitors:
+  enabled: false
+  max-active: 3
+  spawn-interval-min-ticks: 1200
+  spawn-interval-max-ticks: 2400
+  wallet-min-minor: 300
+  wallet-max-minor: 1500
+  max-purchase-items: 3
+  shopping-duration-ticks: 120
+  lifetime-ticks: 2400
+  activation-range: 64.0
+rancher:
+  scan-interval-ticks: 200
+  action-cooldown-ticks: 600
+  love-mode-ticks: 600
+  max-cull-per-cycle: 2
+  interaction-range: 4.0
+  escape-search-radius: 12
+  patrol-interval-ticks: 240
+fisher:
+  attempt-delay-min-ticks: 500
+  attempt-delay-max-ticks: 900
+  success-chance: 0.70
+  max-catch-per-shift: 12
+  water-search-radius: 4
+  water-search-vertical-range: 2
+miner:
+  scan-interval-ticks: 200
+  break-delay-ticks: 120
+  swing-interval-ticks: 10
+  search-radius: 6
+  vertical-range: 3
+  avoidance-radius: 2
+  minimum-travel-distance: 3

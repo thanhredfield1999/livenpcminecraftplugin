@@ -5,11 +5,18 @@ final class SchedulePolicy {
     }
 
     static boolean isWorkTime(long worldTime, boolean storming, long startTick, long endTick) {
+        return isScheduledTime(worldTime, startTick, endTick) && !storming;
+    }
+
+    static boolean isScheduledTime(long worldTime, long startTick, long endTick) {
         long time = Math.floorMod(worldTime, 24000L);
-        boolean inWindow = startTick <= endTick
+        return startTick <= endTick
                 ? time >= startTick && time < endTick
                 : time >= startTick || time < endTick;
-        return inWindow && !storming;
+    }
+
+    static boolean isScheduledTime(long worldTime, ResidentSchedule schedule) {
+        return isScheduledTime(worldTime, schedule.startTick(), schedule.endTick());
     }
 
     static boolean isWorkTime(long worldTime, boolean storming, ResidentSchedule schedule) {

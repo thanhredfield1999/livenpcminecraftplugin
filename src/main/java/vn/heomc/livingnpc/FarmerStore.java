@@ -5,6 +5,7 @@ import java.io.IOException;
 import java.util.EnumSet;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.List;
 import java.util.UUID;
 import java.util.logging.Logger;
 import org.bukkit.configuration.ConfigurationSection;
@@ -46,7 +47,7 @@ final class FarmerStore {
                 StoredLocation plot = StoredLocation.load(section == null ? null : section.getConfigurationSection("plot"));
                 int radius = section == null ? 0 : section.getInt("plot-radius", 4);
                 EnumSet<BehaviorFlag> behaviors = loadBehaviors(section);
-                ResidentProfile profile = loadProfile(section);
+                ResidentProfile profile = ResidentCharacters.enrich(uuid, loadProfile(section));
                 String villageId = section == null ? null : section.getString("village-id");
                 ResidentRole activeRole = ResidentRole.parse(section == null ? null : section.getString("active-role"));
                 Map<ResidentRole, RoleProgress> progress = loadProgress(section, profile);
@@ -83,6 +84,15 @@ final class FarmerStore {
             section.set("profile.title", farmer.profile().title());
             section.set("profile.roles", farmer.profile().roles().stream().map(ResidentRole::storageKey).sorted().toList());
             section.set("profile.skin", farmer.profile().skin());
+            section.set("profile.biography", farmer.profile().biography());
+            section.set("profile.personality", farmer.profile().personality());
+            section.set("profile.preferred-weapon", farmer.profile().preferredWeapon());
+            section.set("profile.goals", farmer.profile().goals());
+            for (Map.Entry<UUID, ResidentRelationship> relationship : farmer.profile().relationships().entrySet()) {
+                String path = "profile.relationships." + relationship.getKey();
+                section.set(path + ".type", relationship.getValue().type());
+                section.set(path + ".name", relationship.getValue().name());
+            }
             section.set("active-role", farmer.activeRole().storageKey());
             for (ResidentRole role : farmer.profile().roles()) {
                 String rolePath = "roles." + role.storageKey();
@@ -137,13 +147,32 @@ final class FarmerStore {
             ResidentRole legacy = ResidentRole.parse(profile.getString("profession", "farmer"));
             roles.add(legacy == null ? ResidentRole.FARMER : legacy);
         }
+        Map<UUID, ResidentRelationship> relationships = new LinkedHashMap<>();
+        ConfigurationSection relationshipSection = profile.getConfigurationSection("relationships");
+        if (relationshipSection != null) {
+            for (String key : relationshipSection.getKeys(false)) {
+                try {
+                    UUID targetUuid = UUID.fromString(key);
+                    relationships.put(targetUuid, new ResidentRelationship(
+                            relationshipSection.getString(key + ".type", ""),
+                            relationshipSection.getString(key + ".name", "")));
+                } catch (IllegalArgumentException exception) {
+                    logger.warning("Skipping invalid relationship UUID in farmers.yml: " + key);
+                }
+            }
+        }
         return new ResidentProfile(
                 profile.getString("id", "custom"),
                 profile.getString("name", "Cư dân"),
                 profile.getString("gender", "unspecified"),
                 profile.getString("title", "Cư dân"),
                 roles,
-                profile.getString("skin", ""));
+                profile.getString("skin", ""),
+                profile.getString("biography", ""),
+                List.copyOf(profile.getStringList("personality")),
+                profile.getString("preferred-weapon", ""),
+                List.copyOf(profile.getStringList("goals")),
+                relationships);
     }
 
     private Map<ResidentRole, RoleProgress> loadProgress(ConfigurationSection section, ResidentProfile profile) {
