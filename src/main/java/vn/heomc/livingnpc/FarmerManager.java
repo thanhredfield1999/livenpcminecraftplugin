@@ -678,7 +678,9 @@ final class FarmerManager {
             Map.Entry<UUID, FarmerRuntime> first = available.get(0);
             Map.Entry<UUID, FarmerRuntime> second = available.get(1);
             if (first.getValue().startSocial(serverTick, config, type, point, second.getKey())) {
-                second.getValue().startSocial(serverTick, config, type, point, first.getKey());
+                if (!second.getValue().startSocial(serverTick, config, type, point, first.getKey())) {
+                    first.getValue().cancelSocial();
+                }
             }
         }
     }

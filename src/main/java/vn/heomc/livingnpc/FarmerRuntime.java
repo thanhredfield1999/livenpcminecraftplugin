@@ -208,6 +208,16 @@ final class FarmerRuntime {
                 serverTick, config);
     }
 
+    void cancelSocial() {
+        if (phase == FarmerPhase.GOING_TO_MARKET || phase == FarmerPhase.GOING_TO_SCENIC
+                || phase == FarmerPhase.SHOPPING || phase == FarmerPhase.SOCIALIZING) {
+            if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
+            navigationTarget = null;
+            phase = FarmerPhase.INACTIVE;
+        }
+        clearSocial();
+    }
+
     void tick(long serverTick, LivingNpcConfig config) {
         if (!npc.isSpawned()) {
             seatManager.release(npc);
@@ -286,10 +296,11 @@ final class FarmerRuntime {
                                 npcLocation.getWorld().getTime(),
                                 npcLocation.getWorld().hasStorm(),
                                 schedule));
+        if (handleSocial(serverTick, config)) {
+            return;
+        }
         if (!workTime) {
-            if (!handleSocial(serverTick, config)) {
-                idleAtHome(serverTick, config, nearbyPlayers);
-            }
+            idleAtHome(serverTick, config, nearbyPlayers);
             return;
         }
 
