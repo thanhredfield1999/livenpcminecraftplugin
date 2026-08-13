@@ -24,12 +24,16 @@ final class FarmerManager {
     private final VillageStore villageStore;
     private final VillagePathCache pathCache;
     private final SeatManager seatManager;
+    private final ActivityPointManager activityPointManager;
+    private final NavigationLeaseManager navigationLeases;
     private LivingNpcConfig config;
     private boolean progressDirty;
     private long nextRoleSaveAttemptTick;
+    private long nextProgressSaveTick = 1200L;
     private long nextSocialTick;
     private Set<UUID> externallyBusy = Set.of();
     private Set<UUID> rolesChangedThisTick = Set.of();
+    private final Map<UUID, Long> nextRuntimeErrorLogTick = new LinkedHashMap<>();
 
     FarmerManager(
             FarmerStore store,
@@ -43,9 +47,15 @@ final class FarmerManager {
         this.villageStore = villageStore;
         this.pathCache = new VillagePathCache(villageStore);
         this.seatManager = new SeatManager(villageStore);
+        this.activityPointManager = new ActivityPointManager(villageStore);
+        this.navigationLeases = new NavigationLeaseManager();
         this.config = config;
         this.definitions = store.load();
         bindLoadedNpcs();
+    }
+
+    boolean manages(UUID npcUuid) {
+        return definitions.containsKey(npcUuid);
     }
 
     NPC create(ResidentProfile profile, Location home) {
@@ -53,7 +63,7 @@ final class FarmerManager {
     }
 
     NPC create(ResidentProfile profile, Location home, String villageId) {
-        if (profile.roles().stream().noneMatch(ResidentRole::implemented)) {
+        if (profile.roles().stream().noneMatch(ReleasePolicy::roleEnabled)) {
             return null;
         }
         VillageDefinition village = villageId == null ? null : villageStore.get(villageId);
@@ -61,15 +71,16 @@ final class FarmerManager {
                 || !home.getWorld().getName().equals(village.center().world()))) {
             return null;
         }
-        Location spawn = bedStandingLocation(home);
-        if (spawn == null) return null;
+        Location bed = canonicalBed(home);
+        Location spawn = bedStandingLocation(bed);
+        if (spawn == null || bedOwnedByAnother(null, bed)) return null;
         NPC npc = CitizensAPI.getNPCRegistry().createNPC(EntityType.PLAYER, profile.name());
         configureWorkerNpc(npc);
         if (!profile.skin().isBlank()) {
             npc.getOrAddTrait(SkinTrait.class).setSkinName(profile.skin(), true);
         }
         FarmerDefinition definition = new FarmerDefinition(
-                npc.getUniqueId(), villageId, StoredLocation.from(home), null, 4, profile, BehaviorFlag.safeDefaults());
+                npc.getUniqueId(), villageId, StoredLocation.from(bed), null, 4, profile, BehaviorFlag.safeDefaults());
         definitions.put(npc.getUniqueId(), definition);
         runtimes.put(npc.getUniqueId(), createRuntime(npc, definition));
         if (!npc.spawn(spawn)) {
@@ -103,7 +114,7 @@ final class FarmerManager {
                 StoredLocation.from(npc.getEntity().getLocation()),
                 null,
                 4,
-                ResidentProfile.custom(npc.getName()),
+                ResidentProfile.adopted(npc.getName()),
                 BehaviorFlag.safeDefaults());
         definitions.put(npc.getUniqueId(), definition);
         configureWorkerNpc(npc);
@@ -123,10 +134,36 @@ final class FarmerManager {
 
     boolean setHome(UUID npcUuid, Location home) {
         FarmerDefinition current = definitions.get(npcUuid);
-        if (current == null || !matchesVillageWorld(current, home) || bedStandingLocation(home) == null) {
+        Location bed = canonicalBed(home);
+        if (current == null || bed == null || !matchesVillageWorld(current, bed)
+                || bedStandingLocation(bed) == null || bedOwnedByAnother(npcUuid, bed)) {
             return false;
         }
-        return update(current.withHome(StoredLocation.from(home)));
+        return update(current.withHome(StoredLocation.from(bed)));
+    }
+
+    private Location canonicalBed(Location location) {
+        if (location == null || !(location.getBlock().getBlockData() instanceof Bed bed)) return null;
+        Block block = location.getBlock();
+        if (bed.getPart() == Bed.Part.FOOT) block = block.getRelative(bed.getFacing());
+        return block.getLocation();
+    }
+
+    private boolean bedOwnedByAnother(UUID npcUuid, Location bed) {
+        for (FarmerDefinition definition : definitions.values()) {
+            if (definition.npcUuid().equals(npcUuid)) continue;
+            Location assigned = definition.home().resolve();
+            Location canonical = canonicalBed(assigned);
+            if (canonical != null && sameBlock(canonical, bed)) return true;
+        }
+        return false;
+    }
+
+    static boolean sameBlock(Location first, Location second) {
+        return first != null && second != null && first.getWorld().equals(second.getWorld())
+                && first.getBlockX() == second.getBlockX()
+                && first.getBlockY() == second.getBlockY()
+                && first.getBlockZ() == second.getBlockZ();
     }
 
     private Location bedStandingLocation(Location bedLocation) {
@@ -211,6 +248,12 @@ final class FarmerManager {
                 .toList();
     }
 
+    boolean removeSeat(String villageId, String seatId) {
+        if (!villageStore.removeSeat(villageId, seatId)) return false;
+        seatManager.releaseSeat(seatId, npcs());
+        return true;
+    }
+
     boolean ready(UUID npcUuid) {
         return readiness(npcUuid).startsWith("SẴN SÀNG");
     }
@@ -237,7 +280,9 @@ final class FarmerManager {
                 ResidentRole.FARMER, new ResidentSchedule(config.workStartTick(), config.workEndTick()));
         if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
                 && !SchedulePolicy.isScheduledTime(plot.getWorld().getTime(), schedule)) return "Ngoài ca Nông dân";
-        if (plot.getWorld().hasStorm()) return "Trời đang mưa";
+        if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE) && plot.getWorld().hasStorm()) {
+            return "Trời đang mưa";
+        }
         if (plot.getWorld().getNearbyPlayers(plot, config.activationRange()).isEmpty()
                 && npc.getEntity().getWorld().getNearbyPlayers(
                         npc.getEntity().getLocation(), config.activationRange()).isEmpty()) {
@@ -250,6 +295,9 @@ final class FarmerManager {
     String activeRoleReadiness(UUID npcUuid) {
         FarmerDefinition definition = definitions.get(npcUuid);
         if (definition == null) return "NPC chưa được quản lý";
+        if (!ReleasePolicy.roleEnabled(definition.activeRole())) {
+            return "Nghề bị khóa trong Season " + ReleasePolicy.SEASON;
+        }
         if (definition.activeRole() == ResidentRole.FARMER) return readiness(npcUuid);
         if (definition.activeRole() == ResidentRole.MERCHANT) {
             VillageDefinition village = villageStore.get(definition.villageId());
@@ -278,14 +326,17 @@ final class FarmerManager {
         WorkZoneValidation validation = WorkZoneValidator.validate(
                 center, zoneType, config.workZoneValidationRadius(), config.workZoneValidationVerticalRange());
         if (!validation.valid()) return "Khu nghề thiếu trạm: " + validation.missing();
-        if (definition.activeRole() == ResidentRole.MINER && !mutationPolicy.hasMiningRegion(center)) {
-            return "Khu mỏ chưa nằm trong region WorldGuard hợp lệ";
+        if (definition.activeRole() == ResidentRole.MINER && village.miningZones().isEmpty()) {
+            return "Làng chưa có Khu đào 2x2";
         }
         ResidentSchedule schedule = definition.schedule(
                 definition.activeRole(), new ResidentSchedule(config.workStartTick(), config.workEndTick()));
+        boolean indoor = definition.activeRole() == ResidentRole.COOK || definition.activeRole() == ResidentRole.CRAFTER;
         if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
-                && !SchedulePolicy.isWorkTime(center.getWorld().getTime(), center.getWorld().hasStorm(), schedule)) {
-            return center.getWorld().hasStorm() ? "Trời đang mưa" : "Ngoài ca " + definition.activeRole().storageKey();
+                && (!SchedulePolicy.isScheduledTime(center.getWorld().getTime(), schedule)
+                || !indoor && center.getWorld().hasStorm())) {
+            return !indoor && center.getWorld().hasStorm()
+                    ? "Trời đang mưa" : "Ngoài ca " + definition.activeRole().storageKey();
         }
         if (center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()) {
             return "Không có người chơi trong " + (int) config.activationRange() + " block quanh khu nghề";
@@ -358,7 +409,8 @@ final class FarmerManager {
     boolean selectJob(UUID uuid, ResidentRole role) {
         FarmerDefinition current = definitions.get(uuid);
         if (current == null || role == null
-                || !role.implemented()) {
+                || !current.profile().hasRole(role)
+                || !ReleasePolicy.roleEnabled(role)) {
             return false;
         }
         VillageDefinition village = villageStore.get(current.villageId());
@@ -459,23 +511,42 @@ final class FarmerManager {
         for (FarmerRuntime runtime : runtimes.values()) {
             FarmerDefinition definition = definitions.get(runtime.npcUuid());
             if (rolesChangedThisTick.contains(runtime.npcUuid())) continue;
-            boolean sleeping = !externallyBusy.contains(runtime.npcUuid()) && runtime.tickSleep(serverTick, config);
-            if (!sleeping && !externallyBusy.contains(runtime.npcUuid())
-                    && definition != null && definition.activeRole() != ResidentRole.RANCHER
-                    && definition.activeRole() != ResidentRole.FISHER
-                    && definition.activeRole() != ResidentRole.MERCHANT
-                    && CivilProfessionRuntime.zoneFor(definition.activeRole()) == null) {
-                runtime.tick(serverTick, config);
+            if (definition == null) continue;
+            try {
+                boolean sleeping = !externallyBusy.contains(runtime.npcUuid())
+                        && runtime.tickSleep(serverTick, config);
+                if (!sleeping && ReleasePolicy.roleEnabled(definition.activeRole())
+                        && !externallyBusy.contains(runtime.npcUuid())
+                        && definition.activeRole() != ResidentRole.RANCHER
+                        && definition.activeRole() != ResidentRole.FISHER
+                        && definition.activeRole() != ResidentRole.MERCHANT
+                        && CivilProfessionRuntime.zoneFor(definition.activeRole()) == null) {
+                    runtime.tick(serverTick, config);
+                }
+            } catch (RuntimeException exception) {
+                runtime.suspend();
+                if (serverTick >= nextRuntimeErrorLogTick.getOrDefault(runtime.npcUuid(), 0L)) {
+                    org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.SEVERE,
+                            "LivingNPC resident tick failed for " + runtime.npcUuid()
+                                    + "; other residents will continue", exception);
+                    nextRuntimeErrorLogTick.put(runtime.npcUuid(), serverTick + 1200L);
+                }
             }
         }
-        if (progressDirty && serverTick % 1200L == 0L) {
+        if (progressDirty && serverTick >= nextProgressSaveTick) {
             progressDirty = !save();
+            nextProgressSaveTick = serverTick + 1200L;
         }
     }
 
     boolean sleeping(UUID npcUuid) {
         FarmerRuntime runtime = runtimes.get(npcUuid);
         return runtime != null && runtime.sleeping();
+    }
+
+    String sleepDebug(UUID npcUuid) {
+        FarmerRuntime runtime = runtimes.get(npcUuid);
+        return runtime == null ? "NO_RUNTIME" : runtime.sleepDebug();
     }
 
     boolean roleChangedThisTick(UUID npcUuid) {
@@ -508,6 +579,8 @@ final class FarmerManager {
             runtime.suspend();
         }
         seatManager.shutdown(npcs());
+        activityPointManager.shutdown();
+        navigationLeases.clear();
         save();
     }
 
@@ -595,7 +668,7 @@ final class FarmerManager {
     private FarmerRuntime createRuntime(NPC npc, FarmerDefinition definition) {
         return new FarmerRuntime(
                 npc, definition, economy, mutationPolicy, villageStore, pathCache,
-                seatManager,
+                seatManager, activityPointManager, navigationLeases,
                 amount -> awardExperience(npc.getUniqueId(), ResidentRole.FARMER, amount));
     }
 
@@ -620,7 +693,7 @@ final class FarmerManager {
             }
             ResidentRole selected = ActiveRolePolicy.select(
                     current.profile().roles(), current.activeRole(), current.schedules(), fallback,
-                    npc.getEntity().getWorld().getTime());
+                    npc.getEntity().getWorld().getTime(), ReleasePolicy.enabledRoles());
             if (selected == current.activeRole()) {
                 continue;
             }
@@ -657,6 +730,7 @@ final class FarmerManager {
                     .filter(entry -> {
                         FarmerDefinition definition = definitions.get(entry.getKey());
                         return definition != null && village.id().equals(definition.villageId())
+                                && socialRoleEligible(definition.activeRole())
                                 && !externallyBusy.contains(entry.getKey())
                                 && entry.getValue().availableForSocial(config);
                     })
@@ -683,6 +757,10 @@ final class FarmerManager {
                 }
             }
         }
+    }
+
+    static boolean socialRoleEligible(ResidentRole role) {
+        return role == ResidentRole.RESIDENT || role == ResidentRole.FARMER;
     }
 
     private boolean matchesVillageWorld(FarmerDefinition definition, Location location) {

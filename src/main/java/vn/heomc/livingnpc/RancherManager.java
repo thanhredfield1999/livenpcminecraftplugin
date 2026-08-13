@@ -17,6 +17,7 @@ final class RancherManager implements Listener {
     private final VillageStore villages;
     private final Map<UUID, RancherRuntime> runtimes = new HashMap<>();
     private final Map<UUID, CullOwner> pendingCull = new HashMap<>();
+    private final Map<UUID, Long> nextRuntimeErrorLogTick = new HashMap<>();
     private final RanchWorkCoordinator workCoordinator = new RanchWorkCoordinator();
 
     RancherManager(FarmerManager residents, NpcEconomy economy, VillageStore villages) {
@@ -50,7 +51,19 @@ final class RancherManager implements Listener {
                 runtime.releaseWorkState();
                 continue;
             }
-            if (definition.activeRole() == ResidentRole.RANCHER) runtime.tick(serverTick, config);
+            if (definition.activeRole() == ResidentRole.RANCHER) {
+                try {
+                    runtime.tick(serverTick, config);
+                } catch (RuntimeException exception) {
+                    runtime.suspend();
+                    if (serverTick >= nextRuntimeErrorLogTick.getOrDefault(definition.npcUuid(), 0L)) {
+                        org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.SEVERE,
+                                "LivingNPC rancher tick failed for " + definition.npcUuid()
+                                        + "; other ranchers will continue", exception);
+                        nextRuntimeErrorLogTick.put(definition.npcUuid(), serverTick + 1200L);
+                    }
+                }
+            }
         }
     }
 
@@ -58,6 +71,7 @@ final class RancherManager implements Listener {
         runtimes.values().forEach(RancherRuntime::suspend);
         runtimes.clear();
         pendingCull.clear();
+        nextRuntimeErrorLogTick.clear();
         workCoordinator.clear();
     }
 

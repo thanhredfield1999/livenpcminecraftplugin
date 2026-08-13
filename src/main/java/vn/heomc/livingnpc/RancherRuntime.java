@@ -4,6 +4,7 @@ import java.util.Comparator;
 import java.util.List;
 import java.util.Map;
 import java.util.UUID;
+import java.util.function.Predicate;
 import net.citizensnpcs.api.npc.NPC;
 import org.bukkit.Location;
 import org.bukkit.Material;
@@ -34,10 +35,18 @@ final class RancherRuntime {
     private String feedingFood;
     private Location foodChest;
     private boolean fetchingFood;
-    private final java.util.Set<UUID> knownHerd = new java.util.HashSet<>();
+    private final java.util.Set<StoredLocation> failedDeliveryLocations = new java.util.HashSet<>();
+    private Location carriedDeliveryChest;
+    private final Map<StoredLocation, java.util.Set<UUID>> knownHerdByPen = new java.util.HashMap<>();
     private Animals escapedAnimal;
     private Location returnTarget;
     private Location patrolTarget;
+    private Location workEntryTarget;
+    private StoredLocation activePen;
+    private int nextPenIndex;
+    private StoredLocation validatedPen;
+    private long validationExpiresTick;
+    private boolean penValid;
 
     RancherRuntime(
             NPC npc, FarmerDefinition definition, NpcEconomy economy, VillageStore villages,
@@ -56,7 +65,10 @@ final class RancherRuntime {
     void updateDefinition(FarmerDefinition updated) {
         boolean wasRancher = ownsRole(definition.activeRole());
         boolean villageChanged = !java.util.Objects.equals(definition.villageId(), updated.villageId());
-        if (villageChanged) releaseWorkState();
+        if (villageChanged) {
+            releaseWorkState();
+            knownHerdByPen.clear();
+        }
         definition = updated;
         if (wasRancher && !ownsRole(updated.activeRole())) suspend();
     }
@@ -72,10 +84,11 @@ final class RancherRuntime {
             return;
         }
         VillageDefinition village = villages.get(definition.villageId());
-        StoredLocation storedZone = village == null ? null : village.workZone(VillageWorkZoneType.RANCH);
+        if (activePen == null && serverTick < nextActionTick) return;
+        StoredLocation storedZone = activePen != null ? activePen
+                : village == null || village.ranchPens().isEmpty() ? null : selectPen(village, config);
         Location zone = storedZone == null ? null : storedZone.resolve();
-        if (zone == null || !npc.getEntity().getWorld().equals(zone.getWorld())
-                || zone.getWorld().getNearbyPlayers(zone, config.activationRange()).isEmpty()) {
+        if (zone == null || !npc.getEntity().getWorld().equals(zone.getWorld()) || !activeNear(zone, config)) {
             suspend();
             return;
         }
@@ -86,13 +99,10 @@ final class RancherRuntime {
             suspend();
             return;
         }
-        if (!WorkZoneValidator.validate(
-                zone, VillageWorkZoneType.RANCH,
-                config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid()) {
+        if (!validPen(storedZone, zone, serverTick, config)) {
             suspend();
             return;
         }
-        if (serverTick < nextActionTick) return;
         if (!feedingAnimals.isEmpty()) {
             if (fetchingFood) {
                 continueFetchingFood(serverTick, config);
@@ -107,6 +117,9 @@ final class RancherRuntime {
         }
         if (economy.carriedInventoryFull(npc.getUniqueId())
                 && depositCarriedLoot(serverTick, config, village.id())) return;
+        activePen = storedZone;
+        if (!enterPen(zone, serverTick, config)) return;
+        if (serverTick < nextActionTick) return;
         if (!workCoordinator.acquire(
                 village.id(), npc.getUniqueId(), storedZone, config.workZoneValidationRadius())) {
             nextActionTick = serverTick + config.rancher().scanIntervalTicks();
@@ -117,13 +130,27 @@ final class RancherRuntime {
                 Animals.class, zone, radius, config.workZoneValidationVerticalRange(), radius,
                 animal -> supported(animal) && inside(animal.getLocation(), zone, radius,
                         config.workZoneValidationVerticalRange())).stream().toList();
+        java.util.Set<UUID> knownHerd = knownHerdByPen.computeIfAbsent(
+                storedZone, ignored -> new java.util.HashSet<>());
         animals.forEach(animal -> knownHerd.add(animal.getUniqueId()));
-        if (tryCollectEgg(zone, village, serverTick, config)) return;
+        if (tryCollectProduct(zone, village, serverTick, config)) return;
         if (tryReturnEscaped(zone, village.id(), serverTick, config)) return;
         if (tryCull(animals, village, serverTick, config)) return;
         if (tryBreed(animals, village, serverTick, config)) return;
         if (tryPatrol(zone, serverTick, config)) return;
-        workCoordinator.release(npc.getUniqueId());
+        releasePen();
+    }
+
+    private boolean validPen(
+            StoredLocation storedZone, Location zone, long serverTick, LivingNpcConfig config) {
+        if (!storedZone.equals(validatedPen) || serverTick >= validationExpiresTick) {
+            validatedPen = storedZone;
+            penValid = WorkZoneValidator.validate(
+                    zone, VillageWorkZoneType.RANCH,
+                    config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid();
+            validationExpiresTick = serverTick + 200L;
+        }
+        return penValid;
     }
 
     void suspend() {
@@ -132,25 +159,29 @@ final class RancherRuntime {
     }
 
     void releaseWorkState() {
-        workCoordinator.release(npc.getUniqueId());
+        releasePen();
         navigationTarget = null;
         feedingAnimals = List.of();
         feedingIndex = 0;
         feedingFood = null;
         foodChest = null;
         fetchingFood = false;
+        failedDeliveryLocations.clear();
+        carriedDeliveryChest = null;
         releaseEscapedAnimal();
         patrolTarget = null;
+        workEntryTarget = null;
+        activePen = null;
         setHand(null);
     }
 
     FarmerPhase phase() {
-        return navigationTarget != null && npc.getNavigator().isNavigating()
+        return (workEntryTarget != null || navigationTarget != null) && npc.getNavigator().isNavigating()
                 ? FarmerPhase.GOING_TO_WORK_STATION : FarmerPhase.RESTING;
     }
 
     boolean taskActive() {
-        return navigationTarget != null || !feedingAnimals.isEmpty() || escapedAnimal != null;
+        return workEntryTarget != null || navigationTarget != null || !feedingAnimals.isEmpty() || escapedAnimal != null;
     }
 
     String status(LivingNpcConfig config) {
@@ -211,6 +242,7 @@ final class RancherRuntime {
 
     private boolean tryReturnEscaped(
             Location zone, String villageId, long serverTick, LivingNpcConfig config) {
+        java.util.Set<UUID> knownHerd = knownHerdByPen.getOrDefault(activePen, java.util.Set.of());
         int search = config.rancher().escapeSearchRadius();
         int vertical = Math.max(config.workZoneValidationVerticalRange(), 4);
         escapedAnimal = zone.getWorld().getNearbyEntitiesByType(
@@ -236,6 +268,7 @@ final class RancherRuntime {
     private void continueReturningEscaped(
             Location zone, String villageId, long serverTick, LivingNpcConfig config) {
         Animals animal = escapedAnimal;
+        java.util.Set<UUID> knownHerd = knownHerdByPen.getOrDefault(activePen, java.util.Set.of());
         if (animal == null || !animal.isValid() || !knownHerd.contains(animal.getUniqueId())
                 || animal.getWorld() != zone.getWorld()) {
             finishEscapedReturn(serverTick, config, false);
@@ -286,7 +319,7 @@ final class RancherRuntime {
         returnTarget = null;
         navigationTarget = null;
         setHand(null);
-        workCoordinator.release(npc.getUniqueId());
+        releasePen();
         nextActionTick = serverTick + (success
                 ? config.rancher().scanIntervalTicks() : config.navigationRetryBackoffTicks());
     }
@@ -309,26 +342,70 @@ final class RancherRuntime {
         }
         navigateTo(patrolTarget, npc.getUniqueId(), serverTick, config, config.navigationDistanceMargin());
         nextActionTick = serverTick + config.rancher().patrolIntervalTicks();
-        workCoordinator.release(npc.getUniqueId());
+        releasePen();
         return true;
+    }
+
+    private boolean enterPen(Location zone, long serverTick, LivingNpcConfig config) {
+        Location current = npc.getEntity().getLocation();
+        if (inside(current, zone, config.workZoneValidationRadius() - 1,
+                config.workZoneValidationVerticalRange())) {
+            workEntryTarget = null;
+            return true;
+        }
+        if (workEntryTarget != null) {
+            double margin = config.navigationDistanceMargin();
+            if (current.distanceSquared(workEntryTarget) <= margin * margin) {
+                if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
+                workEntryTarget = null;
+                if (inside(current, zone, config.workZoneValidationRadius() - 1,
+                        config.workZoneValidationVerticalRange())) {
+                    nextActionTick = serverTick;
+                    return true;
+                }
+            }
+            if (npc.getNavigator().isNavigating()
+                    && serverTick - navigationStartedTick < config.navigationTimeoutTicks()) return false;
+            workEntryTarget = null;
+            releasePen();
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
+        if (serverTick < nextActionTick) return false;
+        Location target = safeRanchTarget(zone, serverTick, config);
+        if (target == null) {
+            navigationFailure = "Không tìm được đường đi vào bên trong khu chăn nuôi";
+            releasePen();
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
+        net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
+        LivingNavigation.allowDoors(navigator.getLocalParameters())
+                .speedModifier(config.navigationSpeedModifier())
+                .distanceMargin(config.navigationDistanceMargin())
+                .destinationTeleportMargin(0.0)
+                .stuckAction((stuckNpc, stuckNavigator) -> false);
+        navigator.setTarget(target);
+        workEntryTarget = target;
+        navigationStartedTick = serverTick;
+        navigationFailure = null;
+        return false;
     }
 
     private Location safeRanchTarget(Location zone, long salt, LivingNpcConfig config) {
         int radius = config.workZoneValidationRadius();
-        java.util.Random random = new java.util.Random(salt ^ npc.getUniqueId().getLeastSignificantBits());
-        for (int attempt = 0; attempt < 16; attempt++) {
-            int x = random.nextInt(-radius + 1, radius);
-            int z = random.nextInt(-radius + 1, radius);
+        Location current = npc.getEntity().getLocation();
+        java.util.ArrayList<Location> candidates = new java.util.ArrayList<>();
+        for (int x = -radius + 1; x < radius; x++) for (int z = -radius + 1; z < radius; z++) {
             org.bukkit.block.Block feet = zone.getWorld().getBlockAt(
                     zone.getBlockX() + x, zone.getBlockY(), zone.getBlockZ() + z);
             if (!feet.isPassable() || !feet.getRelative(0, 1, 0).isPassable()
                     || !feet.getRelative(0, -1, 0).getType().isSolid()) continue;
-            Location candidate = feet.getLocation().add(0.5, 0, 0.5);
-            net.citizensnpcs.api.ai.NavigatorParameters parameters = LivingNavigation.allowDoors(
-                    npc.getNavigator().getLocalParameters());
-            if (npc.getNavigator().canNavigateTo(candidate, parameters)) return candidate;
+            candidates.add(feet.getLocation().add(0.5, 0, 0.5));
         }
-        return null;
+        return candidates.stream()
+                .min(Comparator.comparingDouble(current::distanceSquared))
+                .orElse(null);
     }
 
     private void navigateTo(
@@ -379,7 +456,7 @@ final class RancherRuntime {
             }
             setHand(null);
             nextActionTick = serverTick + config.rancher().actionCooldownTicks();
-            workCoordinator.release(npc.getUniqueId());
+            releasePen();
             return true;
         }
         return false;
@@ -401,12 +478,13 @@ final class RancherRuntime {
             feedingAnimals = List.copyOf(ready);
             feedingIndex = 0;
             feedingFood = food;
-            foodChest = nearestDeliveryChest(village.id());
+            failedDeliveryLocations.clear();
+            foodChest = nearestReachableDeliveryChest(village.id(), config);
             if (foodChest == null) {
                 feedingAnimals = List.of();
                 feedingFood = null;
                 nextActionTick = serverTick + config.navigationRetryBackoffTicks();
-                workCoordinator.release(npc.getUniqueId());
+                releasePen();
                 return false;
             }
             fetchingFood = true;
@@ -466,7 +544,7 @@ final class RancherRuntime {
             feedingFood = null;
             setHand(null);
             nextActionTick = serverTick + config.rancher().actionCooldownTicks();
-            workCoordinator.release(npc.getUniqueId());
+            releasePen();
             return;
         }
         Animals animal = feedingAnimals.get(feedingIndex);
@@ -476,7 +554,7 @@ final class RancherRuntime {
             feedingFood = null;
             setHand(null);
             nextActionTick = serverTick + config.rancher().scanIntervalTicks();
-            workCoordinator.release(npc.getUniqueId());
+            releasePen();
             return;
         }
         if (!approach(animal, serverTick, config)) return;
@@ -530,12 +608,25 @@ final class RancherRuntime {
             if (npc.getEntity() instanceof LivingEntity living) living.swingMainHand();
             foodChest.getWorld().playSound(foodChest, org.bukkit.Sound.BLOCK_CHEST_CLOSE, 0.7f, 1.0f);
             fetchingFood = false;
+            failedDeliveryLocations.clear();
             navigationTarget = null;
             nextActionTick = serverTick + 20L;
             return;
         }
         if (navigationTarget != null && npc.getNavigator().isNavigating()
                 && serverTick - navigationStartedTick < config.navigationTimeoutTicks()) return;
+        if (navigationTarget != null) {
+            failedDeliveryLocations.add(deliveryKey(foodChest));
+            foodChest = nearestReachableDeliveryChest(definition.villageId(), config);
+            navigationTarget = null;
+            if (foodChest == null) {
+                navigationFailure = "Không có rương kho nào còn đường đi để lấy thức ăn";
+                releaseWorkState();
+                nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+                failedDeliveryLocations.clear();
+            }
+            return;
+        }
         net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
         net.citizensnpcs.api.ai.NavigatorParameters parameters = LivingNavigation.allowDoors(
                         navigator.getLocalParameters())
@@ -554,12 +645,35 @@ final class RancherRuntime {
         navigationStartedTick = serverTick;
     }
 
-    private Location nearestDeliveryChest(String villageId) {
+    private Location nearestReachableDeliveryChest(String villageId, LivingNpcConfig config) {
         Location current = npc.getEntity().getLocation();
-        return villages.deliveryChests(villageId).stream()
-                .filter(chest -> current.getWorld().equals(chest.getWorld()))
-                .min(Comparator.comparingDouble(current::distanceSquared))
-                .orElse(null);
+        net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
+        net.citizensnpcs.api.ai.NavigatorParameters parameters = LivingNavigation.allowDoors(
+                        navigator.getLocalParameters())
+                .speedModifier(config.navigationSpeedModifier())
+                .distanceMargin(config.rancher().interactionRange())
+                .destinationTeleportMargin(0.0)
+                .stuckAction((stuckNpc, stuckNavigator) -> false);
+        double rangeSquared = config.rancher().interactionRange() * config.rancher().interactionRange();
+        return nearestReachable(
+                villages.deliveryChests(villageId), current,
+                chest -> !failedDeliveryLocations.contains(deliveryKey(chest))
+                        && (current.distanceSquared(chest) <= rangeSquared
+                                || standingNear(chest, navigator, parameters) != null));
+    }
+
+    static Location nearestReachable(
+            List<Location> candidates, Location current, Predicate<Location> reachable) {
+        return candidates.stream()
+                .filter(candidate -> current.getWorld().equals(candidate.getWorld()))
+                .sorted(Comparator.comparingDouble(current::distanceSquared))
+                .filter(reachable)
+                .findFirst().orElse(null);
+    }
+
+    private StoredLocation deliveryKey(Location location) {
+        return new StoredLocation(
+                location.getWorld().getName(), location.getBlockX(), location.getBlockY(), location.getBlockZ(), 0, 0);
     }
 
     private Material foodMaterial(String food) {
@@ -571,35 +685,80 @@ final class RancherRuntime {
         };
     }
 
-    private boolean tryCollectEgg(
+    private boolean tryCollectProduct(
             Location zone, VillageDefinition village, long serverTick, LivingNpcConfig config) {
         int radius = config.workZoneValidationRadius();
-        Item egg = zone.getWorld().getNearbyEntitiesByType(
+        Item product = zone.getWorld().getNearbyEntitiesByType(
                 Item.class, zone, radius, config.workZoneValidationVerticalRange(), radius,
-                item -> item.getItemStack().getType() == Material.EGG
+                item -> item.getThrower() == null && ranchProduct(item.getItemStack().getType())
                         && inside(item.getLocation(), zone, radius, config.workZoneValidationVerticalRange()))
                 .stream().min(Comparator.comparingDouble(item ->
                         npc.getEntity().getLocation().distanceSquared(item.getLocation()))).orElse(null);
-        if (egg == null) return false;
-        if (!approach(egg.getLocation(), egg.getUniqueId(), serverTick, config)) return true;
-        int amount = egg.getItemStack().getAmount();
-        if (!economy.addCarriedLoot(npc.getUniqueId(), Map.of("egg", amount))) {
+        if (product == null) return false;
+        if (!approach(product.getLocation(), product.getUniqueId(), serverTick, config)) return true;
+        int amount = product.getItemStack().getAmount();
+        String itemKey = product.getItemStack().getType().getKey().getKey();
+        faceLocation(product.getLocation().clone().add(0, 0.25, 0));
+        if (!economy.addCarriedLoot(npc.getUniqueId(), Map.of(itemKey, amount))) {
             depositCarriedLoot(serverTick, config, village.id());
             return true;
         }
         if (npc.getEntity() instanceof LivingEntity living) living.swingMainHand();
-        egg.remove();
+        product.remove();
         economy.recordActivity(
                 npc.getUniqueId(), village.id(), ResidentRole.RANCHER,
-                "Thu hoạch trứng", "egg", amount);
+                "Thu gom sản phẩm chuồng", itemKey, amount);
         nextActionTick = serverTick + config.rancher().scanIntervalTicks();
-        workCoordinator.release(npc.getUniqueId());
+        releasePen();
         return true;
     }
 
+    static boolean ranchProduct(Material material) {
+        return material == Material.EGG || material.name().endsWith("_WOOL");
+    }
+
+    private StoredLocation selectPen(VillageDefinition village, LivingNpcConfig config) {
+        List<RanchPen> pens = village.ranchPens();
+        for (int offset = 0; offset < pens.size(); offset++) {
+            int index = (nextPenIndex + offset) % pens.size();
+            StoredLocation candidate = pens.get(index).center();
+            Location location = candidate.resolve();
+            if (location == null || !npc.getEntity().getWorld().equals(location.getWorld())
+                    || !activeNear(location, config)
+                    || !WorkZoneValidator.validate(
+                            location, VillageWorkZoneType.RANCH,
+                            config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid()
+                    || workCoordinator.occupiedByOther(village.id(), npc.getUniqueId(), candidate,
+                            config.workZoneValidationRadius())
+                    || !canReachPen(location, offset, config)) continue;
+            nextPenIndex = (index + 1) % pens.size();
+            return candidate;
+        }
+        return null;
+    }
+
+    private boolean activeNear(Location zone, LivingNpcConfig config) {
+        Location current = npc.getEntity().getLocation();
+        return !zone.getWorld().getNearbyPlayers(zone, config.activationRange()).isEmpty()
+                || !current.getWorld().getNearbyPlayers(current, config.activationRange()).isEmpty();
+    }
+
+    private boolean canReachPen(Location center, int offset, LivingNpcConfig config) {
+        Location current = npc.getEntity().getLocation();
+        return inside(current, center, config.workZoneValidationRadius(), config.workZoneValidationVerticalRange())
+                || safeRanchTarget(center, nextPenIndex + offset, config) != null;
+    }
+
     private boolean depositCarriedLoot(long serverTick, LivingNpcConfig config, String villageId) {
-        Location chest = nearestDeliveryChest(villageId);
-        if (chest == null) return false;
+        if (carriedDeliveryChest == null) carriedDeliveryChest = nearestReachableDeliveryChest(villageId, config);
+        Location chest = carriedDeliveryChest;
+        if (chest == null) {
+            navigationFailure = "Không có rương kho nào còn đường đi để giao sản phẩm";
+            releasePen();
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            failedDeliveryLocations.clear();
+            return true;
+        }
         Location current = npc.getEntity().getLocation();
         double range = config.rancher().interactionRange();
         if (current.distanceSquared(chest) <= range * range) {
@@ -610,12 +769,23 @@ final class RancherRuntime {
                     && npc.getEntity() instanceof LivingEntity living) living.swingMainHand();
             chest.getWorld().playSound(chest, org.bukkit.Sound.BLOCK_CHEST_CLOSE, 0.7f, 1.0f);
             navigationTarget = null;
+            carriedDeliveryChest = null;
+            failedDeliveryLocations.clear();
+            navigationFailure = null;
             setHand(null);
             nextActionTick = serverTick + config.rancher().actionCooldownTicks();
+            releasePen();
             return true;
         }
         if (navigationTarget != null && npc.getNavigator().isNavigating()
                 && serverTick - navigationStartedTick < config.navigationTimeoutTicks()) return true;
+        if (navigationTarget != null) {
+            failedDeliveryLocations.add(deliveryKey(chest));
+            carriedDeliveryChest = nearestReachableDeliveryChest(villageId, config);
+            navigationTarget = null;
+            nextActionTick = serverTick + 1L;
+            return true;
+        }
         net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
         net.citizensnpcs.api.ai.NavigatorParameters parameters = LivingNavigation.allowDoors(
                         navigator.getLocalParameters())
@@ -624,7 +794,12 @@ final class RancherRuntime {
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
         Location standing = standingNear(chest, navigator, parameters);
-        if (standing == null) return false;
+        if (standing == null) {
+            failedDeliveryLocations.add(deliveryKey(chest));
+            carriedDeliveryChest = null;
+            nextActionTick = serverTick + 1L;
+            return true;
+        }
         navigator.setTarget(standing);
         navigationTarget = npc.getUniqueId();
         navigationStartedTick = serverTick;
@@ -644,9 +819,13 @@ final class RancherRuntime {
                             && feet.getRelative(0, -1, 0).getType().isSolid();
                 })
                 .map(candidate -> candidate.getBlock().getLocation().add(0.5, 0, 0.5))
-                .filter(candidate -> navigator.canNavigateTo(candidate, parameters))
                 .min(Comparator.comparingDouble(current::distanceSquared))
                 .orElse(null);
+    }
+
+    private void releasePen() {
+        workCoordinator.release(npc.getUniqueId());
+        activePen = null;
     }
 
     private void setHand(ItemStack item) {

@@ -11,13 +11,21 @@ final class NpcEconomy {
     private static final int STACK_SIZE = 64;
     private final NpcEconomyStore store;
     private final NpcPriceBook priceBook;
+    private final java.util.logging.Logger logger;
     private LivingNpcConfig config;
     private boolean dirty;
 
     NpcEconomy(NpcEconomyStore store, NpcPriceBook priceBook, LivingNpcConfig config) {
+        this(store, priceBook, config, java.util.logging.Logger.getLogger("LivingNPC"));
+    }
+
+    NpcEconomy(
+            NpcEconomyStore store, NpcPriceBook priceBook, LivingNpcConfig config,
+            java.util.logging.Logger logger) {
         this.store = store;
         this.priceBook = priceBook;
         this.config = config;
+        this.logger = logger;
     }
 
     boolean addProduction(UUID npcUuid, String itemKey, int amount, long shiftKey) {
@@ -105,8 +113,15 @@ final class NpcEconomy {
     boolean transformVillageItems(
             UUID npcUuid, String villageId, ResidentRole role,
             Map<String, Integer> inputs, String output, int outputAmount, int roleLimit, long shiftKey) {
+        return transformVillageItems(
+                npcUuid, villageId, role, inputs, output, outputAmount, Integer.MAX_VALUE, roleLimit, shiftKey);
+    }
+
+    boolean transformVillageItems(
+            UUID npcUuid, String villageId, ResidentRole role, Map<String, Integer> inputs,
+            String output, int outputAmount, int stockTarget, int roleLimit, long shiftKey) {
         if (role == null || inputs == null || output == null || output.isBlank()
-                || outputAmount <= 0 || roleLimit <= 0) return false;
+                || outputAmount <= 0 || stockTarget <= 0 || roleLimit <= 0) return false;
         NpcAccount worker = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
         resetShiftIfNeeded(worker, shiftKey);
@@ -119,6 +134,7 @@ final class NpcEconomy {
         if (worker.roleProduction(role.storageKey()) + outputAmount > roleLimit
                 || worker.producedThisShift() + outputAmount > config.maxOutputPerShift()
                 || !hasStorageFor(town, outputAmount - consumed)
+                || (long) town.quantity(output) + outputAmount > stockTarget
                 || (long) town.quantity(output) + outputAmount > Integer.MAX_VALUE) return false;
         inputs.forEach((key, amount) -> town.setQuantity(key, town.quantity(key) - amount));
         town.setQuantity(output, town.quantity(output) + outputAmount);
@@ -152,11 +168,12 @@ final class NpcEconomy {
         int count = 0;
         for (Map.Entry<String, Integer> item : account.inventory().entrySet()) {
             long unitPrice = priceBook.priceMinor(item.getKey());
-            if (unitPrice <= 0L) {
+            int sellable = sellableQuantity(item.getKey(), item.getValue());
+            if (unitPrice <= 0L || sellable <= 0) {
                 continue;
             }
-            total = Math.addExact(total, Math.multiplyExact(unitPrice, item.getValue()));
-            count += item.getValue();
+            total = Math.addExact(total, Math.multiplyExact(unitPrice, sellable));
+            count += sellable;
         }
         if (total <= 0L) {
             return SaleResult.EMPTY;
@@ -166,7 +183,7 @@ final class NpcEconomy {
         account.setBalanceMinor(Math.addExact(account.balanceMinor(), total));
         for (String itemKey : account.inventory().keySet()) {
             if (priceBook.priceMinor(itemKey) > 0L) {
-                account.setQuantity(itemKey, 0);
+                account.setQuantity(itemKey, Math.min(account.quantity(itemKey), stockReserve(itemKey)));
             }
         }
         account.setLastSaleShift(completedShiftKey);
@@ -201,42 +218,71 @@ final class NpcEconomy {
         dirty = true;
     }
 
-    VisitorPurchaseResult visitorPurchase(
-            String villageId, String transactionId, long walletMinor, int maxItems) {
-        if (walletMinor <= 0L || maxItems <= 0 || store.hasTransaction(transactionId)) {
-            return VisitorPurchaseResult.empty(walletMinor);
+    VisitorDemandSnapshot snapshotVisitorDemand(
+            String villageId, String visitId, long walletMinor, int maxItems) {
+        java.util.LinkedHashMap<String, Integer> demand = new java.util.LinkedHashMap<>();
+        if (visitId == null || visitId.isBlank() || walletMinor <= 0L || maxItems <= 0) {
+            return new VisitorDemandSnapshot(visitId, walletMinor, demand);
+        }
+        long remaining = walletMinor;
+        int remainingItems = maxItems;
+        NpcAccount account = villageAccount(villageId);
+        for (Map.Entry<String, Integer> item : account.inventory().entrySet().stream()
+                .sorted(Map.Entry.comparingByKey()).toList()) {
+            long price = priceBook.priceMinor(item.getKey());
+            int sellable = sellableQuantity(item.getKey(), item.getValue());
+            if (remainingItems <= 0) break;
+            if (price <= 0L || price > remaining || sellable <= 0) continue;
+            int quantity = (int) Math.min(remainingItems,
+                    Math.min(sellable, Math.min(3L, remaining / price)));
+            if (quantity <= 0) continue;
+            demand.put(item.getKey(), quantity);
+            remaining -= Math.multiplyExact(price, quantity);
+            remainingItems -= quantity;
+        }
+        return new VisitorDemandSnapshot(visitId, walletMinor, demand);
+    }
+
+    VisitorPurchaseResult visitorPurchase(String villageId, VisitorDemandSnapshot snapshot) {
+        if (snapshot == null || snapshot.walletMinor() <= 0L || snapshot.empty()
+                || store.hasTransaction(snapshot.visitId())) {
+            return VisitorPurchaseResult.empty(snapshot == null ? 0L : snapshot.walletMinor());
         }
         NpcAccount account = villageAccount(villageId);
         NpcAccount previous = account.copy();
         java.util.LinkedHashMap<String, Integer> purchased = new java.util.LinkedHashMap<>();
-        long remaining = walletMinor;
+        long remaining = snapshot.walletMinor();
         long spent = 0L;
-        int remainingItems = maxItems;
-        for (Map.Entry<String, Integer> item : account.inventory().entrySet().stream().sorted(Map.Entry.comparingByKey()).toList()) {
-            if (remainingItems <= 0) break;
-            long price = priceBook.priceMinor(item.getKey());
-            if (price <= 0L || price > remaining || item.getValue() <= 0) continue;
-            int quantity = (int) Math.min(remainingItems,
-                    Math.min(item.getValue(), Math.min(3L, remaining / price)));
+        for (Map.Entry<String, Integer> requested : snapshot.demand().entrySet()) {
+            long price = priceBook.priceMinor(requested.getKey());
+            int available = sellableQuantity(requested.getKey(), account.quantity(requested.getKey()));
+            if (price <= 0L || price > remaining || available <= 0 || requested.getValue() <= 0) continue;
+            int quantity = (int) Math.min(requested.getValue(), Math.min(available, remaining / price));
             if (quantity <= 0) continue;
             long cost = Math.multiplyExact(price, quantity);
-            account.setQuantity(item.getKey(), item.getValue() - quantity);
-            purchased.put(item.getKey(), quantity);
+            account.setQuantity(requested.getKey(), account.quantity(requested.getKey()) - quantity);
+            purchased.put(requested.getKey(), quantity);
             spent = Math.addExact(spent, cost);
             remaining -= cost;
-            remainingItems -= quantity;
         }
-        if (purchased.isEmpty()) return VisitorPurchaseResult.empty(walletMinor);
         account.setBalanceMinor(Math.addExact(account.balanceMinor(), spent));
-        store.recordVisitorSale(account.npcUuid(), transactionId,
+        store.recordVisitorSale(account.npcUuid(), snapshot.visitId(),
                 purchased.values().stream().mapToInt(Integer::intValue).sum(), spent);
         if (!store.save()) {
             store.restore(previous);
-            store.removeSale(transactionId);
-            return VisitorPurchaseResult.empty(walletMinor);
+            store.removeSale(snapshot.visitId());
+            return VisitorPurchaseResult.empty(snapshot.walletMinor());
         }
         dirty = false;
         return new VisitorPurchaseResult(purchased, spent, remaining);
+    }
+
+    private int sellableQuantity(String itemKey, int quantity) {
+        return Math.max(0, quantity - stockReserve(itemKey));
+    }
+
+    private int stockReserve(String itemKey) {
+        return config.visitors().stockReserves().getOrDefault(itemKey, 0);
     }
 
     boolean consumeVillageItem(String villageId, String itemKey, int amount) {
@@ -311,6 +357,13 @@ final class NpcEconomy {
     void recordActivity(UUID npcUuid, String villageId, ResidentRole role, String action, String itemKey, int amount) {
         store.recordActivity(new NpcActivity(npcUuid, villageId, role, action, itemKey, amount, Instant.now()));
         dirty = true;
+        if (ReleasePolicy.roleEnabled(role)) {
+            logger.info(roleActivityMarker(npcUuid, role));
+        }
+    }
+
+    static String roleActivityMarker(UUID npcUuid, ResidentRole role) {
+        return "NPC_ROLE_ACTIVITY uuid=" + npcUuid + " role=" + role.storageKey() + " result=completed";
     }
 
     java.util.List<NpcActivity> activities(String villageId, ResidentRole role, int limit) {

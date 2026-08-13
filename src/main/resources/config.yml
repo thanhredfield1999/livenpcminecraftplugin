@@ -1,4 +1,7 @@
 tick-interval: 10
+runtime:
+  # Emergency kill switch. Disabling this keeps NPC data and admin commands available but stops all runtime ticks.
+  enabled: true
 activation-range: 48.0
 work-start-tick: 1000
 work-end-tick: 12000
@@ -53,6 +56,17 @@ seating:
   rest-duration-min-ticks: 100
   rest-duration-max-ticks: 240
   stand-duration-ticks: 8
+needs:
+  # Season 7 foundation. Keep disabled until food/water behavior and transaction replay are enabled.
+  enabled: false
+  hunger-decay-ticks-per-point: 1200
+  thirst-decay-ticks-per-point: 800
+  max-managed-delta-ticks: 1200
+  save-interval-ticks: 1200
+season-8:
+  # Foundation only. No Cook runtime or physical furnace inventory is enabled yet.
+  enabled: false
+  max-batch: 4
 navigation:
   speed-modifier: 0.85
   distance-margin: 1.5
@@ -68,9 +82,73 @@ visitors:
   wallet-min-minor: 300
   wallet-max-minor: 1500
   max-purchase-items: 3
+  stock-reserves:
+    wheat: 8
+    wheat_seeds: 8
+    carrot: 8
   shopping-duration-ticks: 120
   lifetime-ticks: 2400
   activation-range: 64.0
+season-5:
+  # Experimental until the market economy and transaction journal pass a live soak test.
+  enabled: false
+  market-day:
+    interval-days: 7
+    day-offset: 0
+    start-tick: 1000
+    end-tick: 12000
+  caravan:
+    follower-min: 1
+    follower-max: 2
+    pack-animal-chance: 0.5
+    formation-spacing: 2.0
+season-9:
+  # Foundation only. Real cooking remains disabled until Seasons 6-8 are implemented and smoke-tested.
+  enabled: false
+season-6:
+  # Foundation only. Enable after activity points and navigation leases pass live smoke tests.
+  enabled: false
+  morning-exit-timeout-ticks: 600
+season-10:
+  # Foundation only. Keep disabled until Seasons 6-9 provide needs, kitchen and cooking journals.
+  enabled: false
+  meals:
+    breakfast:
+      start-tick: 500
+      end-tick: 2500
+    lunch:
+      start-tick: 5500
+      end-tick: 7500
+    dinner:
+      start-tick: 10500
+      end-tick: 12500
+  serving:
+    demand-buffer: 2
+    max-batch-size: 8
+    visitor-quota-per-batch: 0
+  fallback-stored-food: true
+season-11:
+  # Foundation only. Economic seasons do not affect stock or labor until Season 10 is complete.
+  enabled: false
+  days-per-season: 7
+  start-day: 0
+  modifiers:
+    spring:
+      stock-target-percent: 100
+      export-demand-percent: 90
+      labor-priority-percent: 110
+    summer:
+      stock-target-percent: 100
+      export-demand-percent: 100
+      labor-priority-percent: 100
+    autumn:
+      stock-target-percent: 120
+      export-demand-percent: 110
+      labor-priority-percent: 110
+    winter:
+      stock-target-percent: 150
+      export-demand-percent: 80
+      labor-priority-percent: 120
 rancher:
   scan-interval-ticks: 200
   action-cooldown-ticks: 600
@@ -90,7 +168,5 @@ miner:
   scan-interval-ticks: 200
   break-delay-ticks: 120
   swing-interval-ticks: 10
-  search-radius: 6
-  vertical-range: 3
-  avoidance-radius: 2
-  minimum-travel-distance: 3
+  restoration-delay-seconds: 1800
+  batch-size: 4

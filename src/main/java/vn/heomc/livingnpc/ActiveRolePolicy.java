@@ -13,12 +13,23 @@ final class ActiveRolePolicy {
             Map<ResidentRole, ResidentSchedule> schedules,
             ResidentSchedule fallback,
             long worldTime) {
-        if (assignedRoles.contains(currentRole)
+        return select(assignedRoles, currentRole, schedules, fallback, worldTime, Set.of(ResidentRole.values()));
+    }
+
+    static ResidentRole select(
+            Set<ResidentRole> assignedRoles,
+            ResidentRole currentRole,
+            Map<ResidentRole, ResidentSchedule> schedules,
+            ResidentSchedule fallback,
+            long worldTime,
+            Set<ResidentRole> enabledRoles) {
+        if (enabledRoles.contains(currentRole) && assignedRoles.contains(currentRole)
                 && isScheduled(currentRole, schedules, fallback, worldTime)) {
             return currentRole;
         }
         for (ResidentRole role : ResidentRole.values()) {
-            if (assignedRoles.contains(role) && isScheduled(role, schedules, fallback, worldTime)) {
+            if (enabledRoles.contains(role) && assignedRoles.contains(role)
+                    && isScheduled(role, schedules, fallback, worldTime)) {
                 return role;
             }
         }

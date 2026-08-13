@@ -40,6 +40,10 @@ record ResidentProfile(
         return new ResidentProfile("custom", name, "unspecified", "Cư dân", Set.of(ResidentRole.FARMER), "");
     }
 
+    static ResidentProfile adopted(String name) {
+        return new ResidentProfile("custom", name, "unspecified", "Cư dân", Set.of(ResidentRole.RESIDENT), "");
+    }
+
     String profession() {
         return roles.iterator().next().storageKey();
     }

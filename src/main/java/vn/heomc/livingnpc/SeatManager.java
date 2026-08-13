@@ -31,6 +31,7 @@ final class SeatManager {
                 .filter(seat -> !ownersBySeat.containsKey(seat.id()))
                 .filter(seat -> seat.location().world().equals(from.getWorld().getName()))
                 .sorted(Comparator.comparingDouble(seat -> distanceSquared(seat, from)))
+                .limit(4)
                 .filter(seat -> {
                     Location approach = SeatValidator.approachLocation(seat);
                     return approach != null && canNavigateTo.test(approach);
@@ -73,6 +74,18 @@ final class SeatManager {
         SeatDefinition seat = seatsByNpc.remove(npc.getUniqueId());
         if (seat != null) ownersBySeat.remove(seat.id(), npc.getUniqueId());
         if (npc.hasTrait(SitTrait.class)) npc.getTraitNullable(SitTrait.class).setSitting(null);
+    }
+
+    void releaseSeat(String seatId, Iterable<NPC> npcs) {
+        UUID owner = ownersBySeat.remove(seatId);
+        if (owner == null) return;
+        seatsByNpc.remove(owner);
+        for (NPC npc : npcs) {
+            if (npc.getUniqueId().equals(owner)) {
+                if (npc.hasTrait(SitTrait.class)) npc.getTraitNullable(SitTrait.class).setSitting(null);
+                return;
+            }
+        }
     }
 
     void shutdown(Iterable<NPC> npcs) {

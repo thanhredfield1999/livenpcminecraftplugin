@@ -14,7 +14,10 @@ class ResidentGuiLayoutTest {
         Set<Integer> slots = new HashSet<>();
         Arrays.stream(ResidentGui.WORK_ZONE_JOB_SLOTS).forEach(slot -> assertTrue(slots.add(slot)));
         for (int slot : new int[]{
+                ResidentGui.WORK_ZONE_FISHING_SLOT,
+                ResidentGui.WORK_ZONE_RANCH_SLOT,
                 ResidentGui.WORK_ZONE_MARKET_SLOT,
+                ResidentGui.WORK_ZONE_SCENIC_SLOT,
                 ResidentGui.WORK_ZONE_GATE_SLOT,
                 ResidentGui.WORK_ZONE_VISITORS_SLOT,
                 ResidentGui.WORK_ZONE_SEATS_SLOT,
@@ -22,7 +25,7 @@ class ResidentGuiLayoutTest {
             assertTrue(slots.add(slot));
         }
 
-        assertEquals(12, slots.size());
+        assertEquals(15, slots.size());
         assertTrue(slots.stream().allMatch(slot -> slot >= 0 && slot < 45));
     }
 

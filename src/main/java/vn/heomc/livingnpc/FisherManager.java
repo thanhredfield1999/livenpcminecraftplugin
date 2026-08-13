@@ -11,6 +11,7 @@ final class FisherManager {
     private final NpcEconomy economy;
     private final VillageStore villages;
     private final Map<UUID, FisherRuntime> runtimes = new HashMap<>();
+    private final Map<UUID, Long> nextRuntimeErrorLogTick = new HashMap<>();
 
     FisherManager(FarmerManager residents, NpcEconomy economy, VillageStore villages) {
         this.residents = residents;
@@ -40,7 +41,19 @@ final class FisherManager {
                 runtime.releaseWorkState();
                 continue;
             }
-            if (definition.activeRole() == ResidentRole.FISHER) runtime.tick(serverTick, config);
+            if (definition.activeRole() == ResidentRole.FISHER) {
+                try {
+                    runtime.tick(serverTick, config);
+                } catch (RuntimeException exception) {
+                    runtime.suspend();
+                    if (serverTick >= nextRuntimeErrorLogTick.getOrDefault(definition.npcUuid(), 0L)) {
+                        org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.SEVERE,
+                                "LivingNPC fisher tick failed for " + definition.npcUuid()
+                                        + "; other fishers will continue", exception);
+                        nextRuntimeErrorLogTick.put(definition.npcUuid(), serverTick + 1200L);
+                    }
+                }
+            }
         }
     }
 
@@ -52,5 +65,6 @@ final class FisherManager {
     void shutdown() {
         runtimes.values().forEach(FisherRuntime::suspend);
         runtimes.clear();
+        nextRuntimeErrorLogTick.clear();
     }
 }

@@ -16,7 +16,8 @@ import org.bukkit.entity.Player;
 import org.bukkit.inventory.ItemStack;
 
 final class FisherRuntime {
-    private static final List<String> FISH = List.of("cod", "cod", "cod", "salmon", "salmon", "tropical_fish", "pufferfish");
+    private static final double PRECISE_APPROACH_MARGIN = 1.25;
+
     private final NPC npc;
     private final NpcEconomy economy;
     private final VillageStore villages;
@@ -33,6 +34,7 @@ final class FisherRuntime {
     private FishHook hook;
     private long castLandingDeadline;
     private boolean castLanded;
+    private final java.util.Set<String> failedStandingTargets = new java.util.HashSet<>();
 
     FisherRuntime(NPC npc, FarmerDefinition definition, NpcEconomy economy, VillageStore villages,
                   java.util.function.LongConsumer experienceAwarder) {
@@ -99,10 +101,7 @@ final class FisherRuntime {
             nextActionTick = Long.MAX_VALUE;
             return;
         }
-        if (phase == FarmerPhase.CASTING_LINE || phase == FarmerPhase.WAITING_FOR_BITE
-                || phase == FarmerPhase.REELING_IN) {
-            holdRod();
-        }
+        if (requiresFishingRod(phase)) holdRod();
         switch (phase) {
             case INACTIVE -> startTrip(center, serverTick, config);
             case RESTING -> {
@@ -117,6 +116,7 @@ final class FisherRuntime {
                         nextActionTick = serverTick + randomBetween(
                                 config.fisher().attemptDelayMinTicks(), config.fisher().attemptDelayMaxTicks());
                     } else {
+                        clearHand();
                         phase = FarmerPhase.RESTING;
                         nextActionTick = serverTick + 100L;
                     }
@@ -150,6 +150,7 @@ final class FisherRuntime {
             }
             default -> suspend();
         }
+        if (requiresFishingRod(phase)) holdRod();
     }
 
     void suspend() {
@@ -163,11 +164,13 @@ final class FisherRuntime {
         phase = FarmerPhase.INACTIVE;
         fishingWater = null;
         standingTarget = null;
+        failedStandingTargets.clear();
     }
 
     private void startTrip(Location center, long serverTick, LivingNpcConfig config) {
         Target target = findTarget(center, config.fisher());
         if (target == null) {
+            failedStandingTargets.clear();
             phase = FarmerPhase.RESTING;
             nextActionTick = serverTick + 200L;
             return;
@@ -177,8 +180,8 @@ final class FisherRuntime {
         Navigator navigator = npc.getNavigator();
         LivingNavigation.allowDoors(navigator.getLocalParameters())
                 .speedModifier(config.navigationSpeedModifier())
-                .distanceMargin(0.35)
-                .pathDistanceMargin(0.35)
+                .distanceMargin(PRECISE_APPROACH_MARGIN)
+                .pathDistanceMargin(PRECISE_APPROACH_MARGIN)
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
         navigator.setTarget(standingTarget);
@@ -187,23 +190,31 @@ final class FisherRuntime {
     }
 
     private void checkArrival(long serverTick, LivingNpcConfig config) {
-        if (standingTarget != null && fishingWater != null && isSafeStanding(standingTarget.getBlock())
+        if (standingTarget != null && fishingWater != null && isSafeFishingStanding(standingTarget.getBlock())
                 && isSourceWater(fishingWater.getBlock())
-                && horizontalDistanceSquared(npc.getEntity().getLocation(), standingTarget) <= 0.36
-                && Math.abs(npc.getEntity().getLocation().getY() - standingTarget.getY()) <= 0.5) {
+                && horizontalDistanceSquared(npc.getEntity().getLocation(), standingTarget)
+                        <= PRECISE_APPROACH_MARGIN * PRECISE_APPROACH_MARGIN
+                && Math.abs(npc.getEntity().getLocation().getY() - standingTarget.getY()) <= 1.0) {
             holdRod();
+            failedStandingTargets.clear();
             faceWater();
             phase = FarmerPhase.CASTING_LINE;
             nextActionTick = serverTick + 20L;
         } else if (!npc.getNavigator().isNavigating()
                 || serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
-            suspend();
+            if (standingTarget != null) failedStandingTargets.add(targetKey(standingTarget));
+            clearHook();
+            clearHand();
+            fishingWater = null;
+            standingTarget = null;
+            phase = FarmerPhase.RESTING;
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
         }
     }
 
     private void finishAttempt(long serverTick, LivingNpcConfig config, String villageId) {
         if (ThreadLocalRandom.current().nextDouble() < config.fisher().successChance()) {
-            String fish = FISH.get(ThreadLocalRandom.current().nextInt(FISH.size()));
+            String fish = fishForRoll(ThreadLocalRandom.current().nextDouble());
             if (economy.addRoleProduction(
                     npc.getUniqueId(), villageId, ResidentRole.FISHER, fish,
                     1, config.fisher().maxCatchPerShift(), shiftKey)) {
@@ -215,8 +226,20 @@ final class FisherRuntime {
         nextActionTick = serverTick + randomBetween(40L, 100L);
     }
 
+    static String fishForRoll(double roll) {
+        if (roll < 0.60) return "cod";
+        if (roll < 0.85) return "salmon";
+        if (roll < 0.98) return "pufferfish";
+        return "tropical_fish";
+    }
+
+    static boolean requiresFishingRod(FarmerPhase phase) {
+        return phase == FarmerPhase.CASTING_LINE || phase == FarmerPhase.WAITING_FOR_BITE
+                || phase == FarmerPhase.REELING_IN;
+    }
+
     private Target findTarget(Location center, FisherSettings settings) {
-        java.util.ArrayList<Target> targets = new java.util.ArrayList<>();
+        java.util.Map<String, Target> targets = new java.util.LinkedHashMap<>();
         int radius = settings.waterSearchRadius();
         for (int x = -radius; x <= radius; x++) {
             for (int z = -radius; z <= radius; z++) {
@@ -230,13 +253,14 @@ final class FisherRuntime {
                             if (distanceSquared < 4 || distanceSquared > 9) continue;
                             for (int sy = 2; sy >= -2; sy--) {
                                 Block feet = water.getRelative(sx, sy, sz);
-                                if (!isSafeStanding(feet)) continue;
+                                if (!isSafeFishingStanding(feet)) continue;
                                 Location standing = feet.getLocation().add(0.5, 0, 0.5);
                                 if (Math.abs(standing.getY() - waterSurface.getY()) > 2.5
-                                        || !hasClearCast(standing, waterSurface)
-                                        || !npc.getNavigator().canNavigateTo(standing,
-                                                LivingNavigation.allowDoors(npc.getNavigator().getLocalParameters()))) continue;
-                                targets.add(new Target(standing, waterSurface));
+                                        || !hasClearCast(standing, waterSurface)) continue;
+                                String key = targetKey(standing);
+                                if (!failedStandingTargets.contains(key)) {
+                                    targets.putIfAbsent(key, new Target(standing, waterSurface));
+                                }
                                 break;
                             }
                         }
@@ -244,9 +268,14 @@ final class FisherRuntime {
             }
         }
         Location current = npc.getEntity().getLocation();
-        return targets.stream()
+        return targets.values().stream()
                 .min(java.util.Comparator.comparingDouble(target -> current.distanceSquared(target.standing())))
                 .orElse(null);
+    }
+
+    static String targetKey(Location location) {
+        return location.getWorld().getName() + ':' + location.getBlockX() + ':'
+                + location.getBlockY() + ':' + location.getBlockZ();
     }
 
     private boolean hasClearCast(Location standing, Location water) {
@@ -279,6 +308,15 @@ final class FisherRuntime {
                 && support != Material.SOUL_CAMPFIRE && support != Material.CACTUS;
     }
 
+    private boolean isSafeFishingStanding(Block feet) {
+        if (!isSafeStanding(feet)) return false;
+        for (org.bukkit.block.BlockFace face : HORIZONTAL_FACES) {
+            Block adjacentFeet = feet.getRelative(face);
+            if (!isSafeStanding(adjacentFeet)) return false;
+        }
+        return true;
+    }
+
     private void faceWater() {
         if (fishingWater == null) return;
         Location eye = npc.getEntity() instanceof LivingEntity living
@@ -294,7 +332,8 @@ final class FisherRuntime {
         clearHook();
         if (fishingWater == null || standingTarget == null || !(npc.getEntity() instanceof Player player)
                 || !isSourceWater(fishingWater.getBlock())
-                || horizontalDistanceSquared(player.getLocation(), standingTarget) > 0.36) return false;
+                || horizontalDistanceSquared(player.getLocation(), standingTarget)
+                        > PRECISE_APPROACH_MARGIN * PRECISE_APPROACH_MARGIN) return false;
         Location origin = player.getEyeLocation();
         org.bukkit.util.Vector velocity = castVelocity(origin, fishingWater);
         if (velocity.lengthSquared() <= 0.01) return false;
@@ -372,4 +411,11 @@ final class FisherRuntime {
 
     private record Target(Location standing, Location water) {
     }
+
+    private static final org.bukkit.block.BlockFace[] HORIZONTAL_FACES = {
+            org.bukkit.block.BlockFace.NORTH,
+            org.bukkit.block.BlockFace.SOUTH,
+            org.bukkit.block.BlockFace.EAST,
+            org.bukkit.block.BlockFace.WEST
+    };
 }

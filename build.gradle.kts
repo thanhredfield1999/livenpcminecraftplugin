@@ -3,7 +3,7 @@ plugins {
 }
 
 group = "vn.heomc"
-version = "0.5.0-SNAPSHOT"
+version = "0.6.0-rc.2"
 
 repositories {
     mavenCentral()
@@ -22,6 +22,9 @@ dependencies {
     testImplementation(platform("org.junit:junit-bom:6.0.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
     testImplementation("io.papermc.paper:paper-api:1.21.11-R0.1-SNAPSHOT")
+    testImplementation("net.citizensnpcs:citizens-main:2.0.42-SNAPSHOT") {
+        isTransitive = false
+    }
     testImplementation("org.mockito:mockito-core:5.21.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

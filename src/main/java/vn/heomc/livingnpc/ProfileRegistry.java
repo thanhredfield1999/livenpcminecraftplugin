@@ -72,7 +72,7 @@ final class ProfileRegistry {
 
     ResidentProfile firstUnused(Set<String> usedProfileIds) {
         return profiles.values().stream()
-                .filter(profile -> profile.roles().stream().anyMatch(ResidentRole::implemented))
+                .filter(profile -> profile.roles().stream().anyMatch(ReleasePolicy::roleEnabled))
                 .filter(profile -> !usedProfileIds.contains(profile.id().toLowerCase(Locale.ROOT)))
                 .findFirst()
                 .orElse(null);

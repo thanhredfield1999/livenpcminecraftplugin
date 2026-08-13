@@ -78,6 +78,24 @@ class VillageDefinitionTest {
     }
 
     @Test
+    void storesAtMostNineDistinctRanchPens() {
+        StoredLocation center = new StoredLocation("StillCliff", 0, 64, 0, 0, 0);
+        VillageDefinition village = new VillageDefinition("village", "Village", center, null, null, null);
+
+        VillageDefinition changed = village;
+        for (int index = 1; index <= 10; index++) {
+            changed = changed.withRanchPen(new RanchPen(
+                    "ranch_" + index, new StoredLocation("StillCliff", index * 20, 64, 0, 0, 0)));
+        }
+        VillageDefinition duplicate = changed.withRanchPen(new RanchPen(
+                "duplicate", new StoredLocation("StillCliff", 20.8, 64.5, 0.2, 90, 0)));
+
+        assertEquals(9, changed.ranchPens().size());
+        assertEquals(changed, duplicate);
+        assertEquals(8, changed.withoutRanchPen("ranch_1").ranchPens().size());
+    }
+
+    @Test
     void storesFishingZoneSeparatelyFromOtherWorkZones() {
         StoredLocation center = new StoredLocation("StillCliff", 0, 64, 0, 0, 0);
         StoredLocation fishing = new StoredLocation("StillCliff", 12, 63, 8, 0, 0);
@@ -141,5 +159,46 @@ class VillageDefinitionTest {
         assertTrue(!new MerchantStall(merchant, seller, buyer).complete());
         assertTrue(new MerchantStall(merchant, seller,
                 new StoredLocation("StillCliff", 11, 64, 10, 180, 0)).complete());
+    }
+
+    @Test
+    void miningZonesUseTwoByTwoFootprintsAndRejectOverlap() {
+        StoredLocation center = new StoredLocation("StillCliff", 0, 64, 0, 0, 0);
+        VillageDefinition village = new VillageDefinition("village", "Village", center, null, null, null);
+        MiningZone first = new MiningZone(
+                "mine_1", new StoredLocation("StillCliff", 10, 50, 10, 0, 0), 48, 52);
+        MiningZone overlap = new MiningZone(
+                "mine_2", new StoredLocation("StillCliff", 11, 52, 11, 0, 0), 50, 54);
+        MiningZone separate = new MiningZone(
+                "mine_2", new StoredLocation("StillCliff", 20, 50, 20, 0, 0), 48, 52);
+
+        VillageDefinition changed = village.withMiningZone(first);
+
+        assertTrue(first.contains("StillCliff", 10, 48, 10));
+        assertTrue(first.contains("StillCliff", 11, 52, 11));
+        assertTrue(!first.contains("StillCliff", 12, 50, 11));
+        assertEquals(changed, changed.withMiningZone(overlap));
+        assertEquals(2, changed.withMiningZone(separate).miningZones().size());
+    }
+
+    @Test
+    void storesActivityPointsByStableId() {
+        StoredLocation center = new StoredLocation("StillCliff", 0, 64, 0, 0, 0);
+        VillageDefinition village = new VillageDefinition("village", "Village", center, null, null, null);
+        ActivityPoint first = new ActivityPoint(
+                "home_exit_1", ActivityPointType.HOME_EXIT, center,
+                new StoredLocation("StillCliff", 3, 64, 0, 90, 0), 1,
+                null, null, java.util.Set.of(), null);
+        ActivityPoint replacement = new ActivityPoint(
+                "home_exit_1", ActivityPointType.HOME_EXIT, center,
+                new StoredLocation("StillCliff", 4, 64, 0, 90, 0), 1,
+                null, null, java.util.Set.of(), null);
+
+        VillageDefinition changed = village.withActivityPoint(first).withActivityPoint(replacement);
+
+        assertTrue(village.activityPoints().isEmpty());
+        assertEquals(1, changed.activityPoints().size());
+        assertEquals(replacement, changed.activityPoints().getFirst());
+        assertTrue(changed.withoutActivityPoint("home_exit_1").activityPoints().isEmpty());
     }
 }

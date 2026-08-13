@@ -18,7 +18,7 @@ final class SeatValidator {
                 || !block.getRelative(BlockFace.UP, 2).isPassable()) {
             return SeatValidation.invalid("Phía trên ghế phải thoáng đủ 2 block.");
         }
-        BlockFace front = stairs.getFacing().getOppositeFace();
+        BlockFace front = sittingFacing(stairs);
         if (approachLocation(block, front) == null) {
             return SeatValidation.invalid("Không tìm được ô đứng an toàn cạnh ghế.");
         }
@@ -35,7 +35,7 @@ final class SeatValidator {
         if (location == null) return null;
         Block block = location.getBlock();
         if (!(block.getBlockData() instanceof Stairs stairs)) return null;
-        return approachLocation(block, stairs.getFacing().getOppositeFace());
+        return approachLocation(block, sittingFacing(stairs));
     }
 
     static boolean stillValid(SeatDefinition seat) {
@@ -45,9 +45,14 @@ final class SeatValidator {
         Block block = location.getBlock();
         if (!block.getRelative(BlockFace.UP).isPassable()
                 || !block.getRelative(BlockFace.UP, 2).isPassable()) return false;
-        BlockFace front = stairs.getFacing().getOppositeFace();
+        BlockFace front = sittingFacing(stairs);
         SeatType currentType = isTable(block.getRelative(front)) ? SeatType.DINING : SeatType.REST;
-        return currentType == seat.type() && approachLocation(block, front) != null;
+        return currentType == seat.type() && yaw(front) == seat.location().yaw()
+                && approachLocation(block, front) != null;
+    }
+
+    static BlockFace sittingFacing(Stairs stairs) {
+        return stairs.getFacing().getOppositeFace();
     }
 
     static float yaw(BlockFace face) {

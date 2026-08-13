@@ -11,7 +11,7 @@ final class MerchantManager {
     private final FarmerManager residents;
     private final VillageStore villages;
     private final Map<UUID, MerchantRuntime> runtimes = new HashMap<>();
-    private final Set<UUID> reserved = new java.util.HashSet<>();
+    private final Map<UUID, String> reservations = new HashMap<>();
 
     MerchantManager(FarmerManager residents, VillageStore villages) {
         this.residents = residents;
@@ -24,14 +24,12 @@ final class MerchantManager {
         runtimes.entrySet().removeIf(entry -> {
             if (managed.contains(entry.getKey())) return false;
             entry.getValue().suspend();
-            reserved.remove(entry.getKey());
             return true;
         });
         for (FarmerDefinition definition : residents.definitions()) {
             if (definition.activeRole() != ResidentRole.MERCHANT) {
                 MerchantRuntime removed = runtimes.remove(definition.npcUuid());
                 if (removed != null) removed.suspend();
-                reserved.remove(definition.npcUuid());
                 continue;
             }
             NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
@@ -47,18 +45,19 @@ final class MerchantManager {
         }
     }
 
-    MerchantStall reserveOpenStall(String villageId) {
+    MerchantStall reserveOpenStall(String villageId, String visitId) {
         VillageDefinition village = villages.get(villageId);
-        if (village == null) return null;
+        if (village == null || visitId == null || visitId.isBlank()) return null;
         for (MerchantStall stall : village.merchantStalls()) {
             MerchantRuntime runtime = runtimes.get(stall.merchantUuid());
-            if (stall.complete() && runtime != null && runtime.open() && reserved.add(stall.merchantUuid())) return stall;
+            if (stall.complete() && runtime != null && runtime.open()
+                    && reservations.putIfAbsent(stall.merchantUuid(), visitId) == null) return stall;
         }
         return null;
     }
 
-    void release(UUID merchantUuid) {
-        reserved.remove(merchantUuid);
+    void release(UUID merchantUuid, String visitId) {
+        if (merchantUuid != null && visitId != null) reservations.remove(merchantUuid, visitId);
     }
 
     boolean open(UUID merchantUuid) {
@@ -74,6 +73,6 @@ final class MerchantManager {
     void shutdown() {
         runtimes.values().forEach(MerchantRuntime::suspend);
         runtimes.clear();
-        reserved.clear();
+        reservations.clear();
     }
 }

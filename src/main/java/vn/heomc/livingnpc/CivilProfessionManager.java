@@ -11,15 +11,22 @@ final class CivilProfessionManager {
     private final NpcEconomy economy;
     private final VillageStore villages;
     private final WorldMutationPolicy mutationPolicy;
+    private final ProductionRecipeRegistry recipes;
+    private final MiningRestorationStore restorations;
+    private final MiningWorkCoordinator miningCoordinator = new MiningWorkCoordinator();
+    private final SecurityAlarmCoordinator alarms = new SecurityAlarmCoordinator();
     private final Map<UUID, CivilProfessionRuntime> runtimes = new HashMap<>();
 
     CivilProfessionManager(
             FarmerManager residents, NpcEconomy economy, VillageStore villages,
-            WorldMutationPolicy mutationPolicy) {
+            WorldMutationPolicy mutationPolicy, ProductionRecipeRegistry recipes,
+            MiningRestorationStore restorations) {
         this.residents = residents;
         this.economy = economy;
         this.villages = villages;
         this.mutationPolicy = mutationPolicy;
+        this.recipes = recipes;
+        this.restorations = restorations;
     }
 
     void tick(long serverTick, LivingNpcConfig config) {
@@ -37,7 +44,8 @@ final class CivilProfessionManager {
             if (npc == null) continue;
             CivilProfessionRuntime runtime = runtimes.computeIfAbsent(definition.npcUuid(), ignored ->
                     new CivilProfessionRuntime(
-                            npc, definition, economy, villages, mutationPolicy,
+                            npc, definition, economy, villages, mutationPolicy, recipes, restorations,
+                            miningCoordinator, alarms,
                             amount -> {
                                 FarmerDefinition current = residents.get(definition.npcUuid());
                                 if (current != null) residents.awardExperience(
@@ -61,5 +69,10 @@ final class CivilProfessionManager {
     void shutdown() {
         runtimes.values().forEach(CivilProfessionRuntime::suspend);
         runtimes.clear();
+        alarms.clear();
+    }
+
+    void reloadRecipes() {
+        recipes.reload();
     }
 }

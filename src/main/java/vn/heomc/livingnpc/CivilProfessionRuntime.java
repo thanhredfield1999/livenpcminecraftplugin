@@ -1,7 +1,5 @@
 package vn.heomc.livingnpc;
 
-import java.util.List;
-import java.util.Map;
 import java.util.Objects;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
@@ -21,6 +19,10 @@ final class CivilProfessionRuntime {
     private final NpcEconomy economy;
     private final VillageStore villages;
     private final WorldMutationPolicy mutationPolicy;
+    private final ProductionRecipeRegistry recipes;
+    private final MiningRestorationStore restorations;
+    private final MiningWorkCoordinator miningCoordinator;
+    private final SecurityAlarmCoordinator alarms;
     private final java.util.function.LongConsumer experienceAwarder;
     private FarmerDefinition definition;
     private FarmerPhase phase = FarmerPhase.INACTIVE;
@@ -29,17 +31,29 @@ final class CivilProfessionRuntime {
     private long nextActionTick;
     private long shiftKey = Long.MIN_VALUE;
     private Block miningBlock;
+    private MiningZone miningZone;
     private long miningStartedTick;
     private long nextMiningSwingTick;
+    private StoredLocation validatedZone;
+    private VillageWorkZoneType validatedZoneType;
+    private long validationExpiresTick;
+    private boolean zoneValid;
 
     CivilProfessionRuntime(
             NPC npc, FarmerDefinition definition, NpcEconomy economy, VillageStore villages,
-            WorldMutationPolicy mutationPolicy, java.util.function.LongConsumer experienceAwarder) {
+            WorldMutationPolicy mutationPolicy, ProductionRecipeRegistry recipes,
+            MiningRestorationStore restorations, MiningWorkCoordinator miningCoordinator,
+            SecurityAlarmCoordinator alarms,
+            java.util.function.LongConsumer experienceAwarder) {
         this.npc = npc;
         this.definition = definition;
         this.economy = economy;
         this.villages = villages;
         this.mutationPolicy = mutationPolicy;
+        this.recipes = recipes;
+        this.restorations = restorations;
+        this.miningCoordinator = miningCoordinator;
+        this.alarms = alarms;
         this.experienceAwarder = experienceAwarder;
     }
 
@@ -77,16 +91,17 @@ final class CivilProfessionRuntime {
             suspend();
             return;
         }
-        if (role == ResidentRole.MINER && !mutationPolicy.hasMiningRegion(center)) {
+        if (role == ResidentRole.MINER && village.miningZones().isEmpty()) {
             suspend();
             return;
         }
         ResidentSchedule schedule = definition.schedule(
                 role, new ResidentSchedule(config.workStartTick(), config.workEndTick()));
+        boolean weatherStopsWork = role == ResidentRole.MINER || role == ResidentRole.SECURITY;
         if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
-                && !SchedulePolicy.isWorkTime(center.getWorld().getTime(), center.getWorld().hasStorm(), schedule)
-                || !WorkZoneValidator.validate(center, zoneType,
-                        config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid()) {
+                && (!SchedulePolicy.isScheduledTime(center.getWorld().getTime(), schedule)
+                || weatherStopsWork && center.getWorld().hasStorm())
+                || !validZone(stored, center, zoneType, serverTick, config)) {
             suspend();
             return;
         }
@@ -130,6 +145,20 @@ final class CivilProfessionRuntime {
         }
     }
 
+    private boolean validZone(
+            StoredLocation stored, Location center, VillageWorkZoneType zoneType,
+            long serverTick, LivingNpcConfig config) {
+        if (!stored.equals(validatedZone) || zoneType != validatedZoneType || serverTick >= validationExpiresTick) {
+            validatedZone = stored;
+            validatedZoneType = zoneType;
+            zoneValid = WorkZoneValidator.validate(
+                    center, zoneType,
+                    config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid();
+            validationExpiresTick = serverTick + 200L;
+        }
+        return zoneValid;
+    }
+
     void suspend() {
         if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
         releaseWorkState();
@@ -141,6 +170,8 @@ final class CivilProfessionRuntime {
         phase = FarmerPhase.INACTIVE;
         station = null;
         miningBlock = null;
+        miningZone = null;
+        miningCoordinator.release(npc.getUniqueId());
         miningStartedTick = 0L;
         nextMiningSwingTick = 0L;
     }
@@ -168,18 +199,14 @@ final class CivilProfessionRuntime {
     }
 
     private void finishProduction(ResidentRole role, String villageId, long serverTick) {
-        Recipe recipe = chooseRecipe(role, villageId);
-        boolean produced = recipe != null && (recipe.inputs().isEmpty()
-                ? economy.addRoleProduction(
-                        npc.getUniqueId(), villageId, role, recipe.output(), recipe.amount(),
-                        PRODUCTION_LIMIT, shiftKey)
-                : economy.transformVillageItems(
-                        npc.getUniqueId(), villageId, role, recipe.inputs(), recipe.output(),
-                        recipe.amount(), PRODUCTION_LIMIT, shiftKey));
+        ProductionRecipe recipe = chooseRecipe(role, villageId);
+        boolean produced = recipe != null && economy.transformVillageItems(
+                npc.getUniqueId(), villageId, role, recipe.inputs(), recipe.output(),
+                recipe.outputAmount(), recipe.stockTarget(), PRODUCTION_LIMIT, shiftKey);
         if (produced) {
             experienceAwarder.accept(10L);
             economy.recordActivity(
-                    npc.getUniqueId(), villageId, role, recipe.action(), recipe.output(), recipe.amount());
+                    npc.getUniqueId(), villageId, role, recipe.action(), recipe.output(), recipe.outputAmount());
         }
         clearHand();
         phase = FarmerPhase.RESTING;
@@ -217,7 +244,7 @@ final class CivilProfessionRuntime {
             return;
         }
         if (serverTick < nextActionTick) return;
-        miningBlock = findMiningBlock(center, villages.get(villageId), config.miner());
+        miningBlock = findMiningBlock(villages.get(villageId));
         if (miningBlock == null) {
             phase = FarmerPhase.RESTING;
             nextActionTick = serverTick + config.miner().scanIntervalTicks();
@@ -232,70 +259,33 @@ final class CivilProfessionRuntime {
         navigate(station, serverTick, config);
     }
 
-    private Block findMiningBlock(Location center, VillageDefinition village, MinerSettings settings) {
+    private Block findMiningBlock(VillageDefinition village) {
+        if (village == null) return null;
         Location current = npc.getEntity().getLocation();
-        java.util.List<Block> protectedBlocks = findProtectedBlocks(center, village, settings);
         java.util.List<MiningCandidate> candidates = new java.util.ArrayList<>();
-        for (int x = -settings.searchRadius(); x <= settings.searchRadius(); x++) {
-            for (int z = -settings.searchRadius(); z <= settings.searchRadius(); z++) {
-                int blockX = center.getBlockX() + x;
-                int blockZ = center.getBlockZ() + z;
-                if (!center.getWorld().isChunkLoaded(blockX >> 4, blockZ >> 4)) continue;
-                for (int y = -settings.verticalRange(); y <= settings.verticalRange(); y++) {
-                    Block block = center.getWorld().getBlockAt(
-                            blockX, center.getBlockY() + y, blockZ);
-                    if (!miningOutput(block.getType()).isPresent()
-                            || nearProtectedFeature(block, protectedBlocks, settings.avoidanceRadius())
-                            || !mutationPolicy.inSameMiningRegion(center, block.getLocation())
+        for (MiningZone zone : village.miningZones()) {
+            Location corner = zone.corner().resolve();
+            if (corner == null || !corner.getWorld().isChunkLoaded(corner.getBlockX() >> 4, corner.getBlockZ() >> 4)) continue;
+            for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) {
+                for (int y = zone.maxY(); y >= zone.minY(); y--) {
+                    Block block = corner.getWorld().getBlockAt(corner.getBlockX() + x, y, corner.getBlockZ() + z);
+                    if (miningOutput(block.getType()).isEmpty()
                             || !mutationPolicy.allows(block.getLocation(), MutationType.BREAK)) continue;
                     Location standing = safeStandingNear(block.getLocation(), current);
-                    if (standing == null || nearProtectedFeature(
-                            standing.getBlock(), protectedBlocks, settings.avoidanceRadius())) continue;
-                    candidates.add(new MiningCandidate(block, current.distanceSquared(standing)));
+                    if (standing == null) continue;
+                    candidates.add(new MiningCandidate(block, zone, current.distanceSquared(standing)));
                 }
             }
         }
         if (candidates.isEmpty()) return null;
-        double minimumDistanceSquared = settings.minimumTravelDistance() * settings.minimumTravelDistance();
-        java.util.List<MiningCandidate> roaming = candidates.stream()
-                .filter(candidate -> candidate.distanceSquared() >= minimumDistanceSquared)
-                .toList();
-        java.util.List<MiningCandidate> pool = roaming.isEmpty() ? candidates : roaming;
-        return pool.get(ThreadLocalRandom.current().nextInt(pool.size())).block();
-    }
-
-    private java.util.List<Block> findProtectedBlocks(
-            Location center, VillageDefinition village, MinerSettings settings) {
-        java.util.List<Block> protectedBlocks = new java.util.ArrayList<>();
-        int horizontal = settings.searchRadius() + settings.avoidanceRadius();
-        int vertical = settings.verticalRange() + settings.avoidanceRadius();
-        for (int x = -horizontal; x <= horizontal; x++) for (int z = -horizontal; z <= horizontal; z++) {
-            int blockX = center.getBlockX() + x;
-            int blockZ = center.getBlockZ() + z;
-            if (!center.getWorld().isChunkLoaded(blockX >> 4, blockZ >> 4)) continue;
-            for (int y = -vertical; y <= vertical; y++) {
-                Block block = center.getWorld().getBlockAt(blockX, center.getBlockY() + y, blockZ);
-                if (isProtectedFeature(block.getType())) protectedBlocks.add(block);
+        candidates.sort(java.util.Comparator.comparingDouble(MiningCandidate::distanceSquared));
+        for (MiningCandidate candidate : candidates.stream().limit(4).toList()) {
+            if (miningCoordinator.claim(npc.getUniqueId(), candidate.zone().id())) {
+                miningZone = candidate.zone();
+                return candidate.block();
             }
         }
-        addProtectedLocation(protectedBlocks, definition.home(), center);
-        if (village != null) {
-            village.deliveryLocations().forEach(location -> addProtectedLocation(protectedBlocks, location, center));
-            village.seats().forEach(seat -> addProtectedLocation(protectedBlocks, seat.location(), center));
-        }
-        return protectedBlocks;
-    }
-
-    private void addProtectedLocation(java.util.List<Block> blocks, StoredLocation stored, Location center) {
-        Location location = stored == null ? null : stored.resolve();
-        if (location != null && location.getWorld().equals(center.getWorld())) blocks.add(location.getBlock());
-    }
-
-    private boolean nearProtectedFeature(Block candidate, java.util.List<Block> protectedBlocks, int radius) {
-        return protectedBlocks.stream().anyMatch(protectedBlock ->
-                Math.abs(candidate.getX() - protectedBlock.getX()) <= radius
-                        && Math.abs(candidate.getY() - protectedBlock.getY()) <= radius
-                        && Math.abs(candidate.getZ() - protectedBlock.getZ()) <= radius);
+        return null;
     }
 
     static boolean isProtectedFeature(Material material) {
@@ -319,9 +309,19 @@ final class CivilProfessionRuntime {
             return;
         }
         java.util.Optional<String> output = miningOutput(block.getType());
-        if (output.isEmpty() || !economy.addRoleProduction(
-                npc.getUniqueId(), villageId, ResidentRole.MINER, output.get(), 1,
+        Material temporary = block.getY() < 0 ? Material.COBBLED_DEEPSLATE : Material.COBBLESTONE;
+        if (output.isEmpty() || miningZone == null
+                || !miningZone.contains(block.getWorld().getName(), block.getX(), block.getY(), block.getZ())
+                || !restorations.record(block, block.getBlockData(), temporary,
+                        System.currentTimeMillis() + config.miner().restorationDelaySeconds() * 1000L)) {
+            releaseWorkState();
+            nextActionTick = serverTick + config.miner().scanIntervalTicks();
+            return;
+        }
+        block.setType(temporary, false);
+        if (!economy.addRoleProduction(npc.getUniqueId(), villageId, ResidentRole.MINER, output.get(), 1,
                 PRODUCTION_LIMIT, shiftKey)) {
+            restorations.rollback(block);
             releaseWorkState();
             nextActionTick = serverTick + config.miner().scanIntervalTicks();
             return;
@@ -333,6 +333,8 @@ final class CivilProfessionRuntime {
         economy.recordActivity(npc.getUniqueId(), villageId, ResidentRole.MINER, "Khai thác", output.get(), 1);
         clearHand();
         miningBlock = null;
+        miningCoordinator.release(npc.getUniqueId());
+        miningZone = null;
         station = null;
         phase = FarmerPhase.RESTING;
         nextActionTick = serverTick + config.miner().scanIntervalTicks();
@@ -347,33 +349,20 @@ final class CivilProfessionRuntime {
         });
     }
 
-    private Recipe chooseRecipe(ResidentRole role, String villageId) {
+    private ProductionRecipe chooseRecipe(ResidentRole role, String villageId) {
         NpcAccount town = economy.villageAccount(villageId);
-        if (role == ResidentRole.COOK) {
-            for (Recipe recipe : List.of(
-                    new Recipe(Map.of("chicken", 1), "cooked_chicken", 1, "Nấu thức ăn"),
-                    new Recipe(Map.of("cod", 1), "cooked_cod", 1, "Nấu thức ăn"),
-                    new Recipe(Map.of("salmon", 1), "cooked_salmon", 1, "Nấu thức ăn"))) {
-                if (town.quantity(recipe.inputs().keySet().iterator().next()) > 0) return recipe;
+        for (ProductionRecipe recipe : recipes.recipes(role)) {
+            if (town.quantity(recipe.output()) + recipe.outputAmount() > recipe.stockTarget()) continue;
+            if (recipe.inputs().entrySet().stream().allMatch(input -> town.quantity(input.getKey()) >= input.getValue())) {
+                return recipe;
             }
-        } else if (role == ResidentRole.CRAFTER) {
-            if (town.quantity("raw_iron") > 0) return new Recipe(Map.of("raw_iron", 1), "iron_ingot", 1, "Luyện sắt");
-            if (town.quantity("iron_ingot") >= 2) return new Recipe(Map.of("iron_ingot", 2), "shears", 1, "Chế tạo kéo");
-            if (town.quantity("wheat") >= 2) return new Recipe(Map.of("wheat", 2), "bread", 1, "Làm bánh mì");
-        } else if (role == ResidentRole.MINER) {
-            int roll = ThreadLocalRandom.current().nextInt(10);
-            return roll < 6
-                    ? new Recipe(Map.of(), "cobblestone", 1, "Khai thác")
-                    : roll < 9 ? new Recipe(Map.of(), "coal", 1, "Khai thác")
-                    : new Recipe(Map.of(), "raw_iron", 1, "Khai thác");
         }
         return null;
     }
 
     private void tickSecurity(Location center, long serverTick, LivingNpcConfig config, String villageId) {
-        Monster danger = center.getWorld().getNearbyEntitiesByType(Monster.class, center, 12.0).stream()
-                .min(java.util.Comparator.comparingDouble(monster ->
-                        npc.getEntity().getLocation().distanceSquared(monster.getLocation()))).orElse(null);
+        Monster danger = alarms.nearestDanger(
+                villageId, center, npc.getEntity().getLocation(), serverTick);
         if (danger != null) {
             setHand(new ItemStack(Material.SHIELD));
             face(danger.getLocation());
@@ -490,9 +479,6 @@ final class CivilProfessionRuntime {
                         miningBlock.getLocation(), progress, npc.getEntity()));
     }
 
-    private record Recipe(Map<String, Integer> inputs, String output, int amount, String action) {
-    }
-
-    private record MiningCandidate(Block block, double distanceSquared) {
+    private record MiningCandidate(Block block, MiningZone zone, double distanceSquared) {
     }
 }

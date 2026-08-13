@@ -31,13 +31,19 @@ record LivingNpcConfig(
         double navigationDistanceMargin,
         int workZoneValidationRadius,
         int workZoneValidationVerticalRange,
-        FarmerDailyPlanSettings farmerDailyPlan,
-        VisitorSettings visitors,
-        RancherSettings rancher,
+         FarmerDailyPlanSettings farmerDailyPlan,
+         VisitorSettings visitors,
+          SeasonFiveSettings seasonFive,
+          SeasonSixSettings seasonSix,
+         SeasonTenSettings seasonTen,
+         SeasonElevenSettings seasonEleven,
+         RancherSettings rancher,
         FisherSettings fisher,
         MinerSettings miner,
         ResidentPatrolSettings residentPatrol,
-        SeatingSettings seating) {
+        SeatingSettings seating,
+        NeedsSettings needs,
+        SeasonEightSettings seasonEight) {
 
     static LivingNpcConfig load(FileConfiguration config) {
         int minDelay = Math.max(1, config.getInt("action-delay-min-ticks", 20));
@@ -52,11 +58,11 @@ record LivingNpcConfig(
         long patrolCooldownMax = Math.max(
                 patrolCooldownMin, config.getLong("resident.patrol.trip-cooldown-max-ticks", 360L));
         return new LivingNpcConfig(
-                Math.max(1L, config.getLong("tick-interval", 10L)),
+                Math.max(10L, config.getLong("tick-interval", 10L)),
                 Math.max(1.0, config.getDouble("activation-range", 48.0)),
                 config.getLong("work-start-tick", 1000L),
                 config.getLong("work-end-tick", 12000L),
-                Math.max(20L, config.getLong("work-scan-interval-ticks", 100L)),
+                Math.max(100L, config.getLong("work-scan-interval-ticks", 100L)),
                 minDelay,
                 maxDelay,
                 Math.max(5, config.getInt("inspection-duration-ticks", 12)),
@@ -75,7 +81,7 @@ record LivingNpcConfig(
                 config.getString("economy.currency-name", "Xu đồng"),
                 Math.max(100L, config.getLong("navigation-timeout-ticks", 400L)),
                 Math.max(20L, config.getLong("navigation.retry-backoff-ticks", 60L)),
-                Math.max(1, config.getInt("max-plot-radius", 8)),
+                Math.clamp(config.getInt("max-plot-radius", 8), 1, 8),
                 (float) Math.max(0.1, config.getDouble("navigation.speed-modifier", 0.85)),
                 Math.max(0.5, config.getDouble("navigation.distance-margin", 1.5)),
                 Math.clamp(config.getInt("work-zones.validation-radius", 6), 1, 16),
@@ -83,8 +89,14 @@ record LivingNpcConfig(
                 new FarmerDailyPlanSettings(
                         config.getBoolean("farmer.daily-plan.enabled", true),
                         Math.clamp(config.getLong("farmer.daily-plan.lunch-duration-ticks", 1000L), 0L, 6000L)),
-                loadVisitors(config),
-                new RancherSettings(
+                 loadVisitors(config),
+                 loadSeasonFive(config),
+                 new SeasonSixSettings(
+                         config.getBoolean("season-6.enabled", false),
+                         config.getLong("season-6.morning-exit-timeout-ticks", 600L)),
+                  loadSeasonTen(config),
+                  loadSeasonEleven(config),
+                 new RancherSettings(
                         Math.max(100L, config.getLong("rancher.scan-interval-ticks", 200L)),
                         Math.max(100L, config.getLong("rancher.action-cooldown-ticks", 600L)),
                         Math.clamp(config.getInt("rancher.love-mode-ticks", 600), 100, 1200),
@@ -103,10 +115,8 @@ record LivingNpcConfig(
                         Math.max(100L, config.getLong("miner.scan-interval-ticks", 200L)),
                         Math.max(120L, config.getLong("miner.break-delay-ticks", 120L)),
                         Math.clamp(config.getLong("miner.swing-interval-ticks", 10L), 5L, 40L),
-                        Math.clamp(config.getInt("miner.search-radius", 6), 1, 12),
-                        Math.clamp(config.getInt("miner.vertical-range", 3), 0, 8),
-                        Math.clamp(config.getInt("miner.avoidance-radius", 2), 1, 4),
-                        Math.clamp(config.getInt("miner.minimum-travel-distance", 3), 0, 8)),
+                        Math.max(60L, config.getLong("miner.restoration-delay-seconds", 1800L)),
+                        Math.clamp(config.getInt("miner.batch-size", 4), 1, 4)),
                 new ResidentPatrolSettings(
                         config.getBoolean("resident.patrol.enabled", true),
                         Math.max(200L, config.getLong("resident.patrol.scan-interval-ticks", 600L)),
@@ -118,13 +128,28 @@ record LivingNpcConfig(
                         Math.clamp(config.getInt("resident.patrol.max-target-distance", 24), 4, 64),
                         patrolCooldownMin,
                         patrolCooldownMax),
-                loadSeating(config));
+                loadSeating(config),
+                loadNeeds(config),
+                new SeasonEightSettings(
+                        config.getBoolean("season-8.enabled", false),
+                        Math.clamp(config.getInt("season-8.max-batch", 4), 1, 16)));
     }
 
     private static VisitorSettings loadVisitors(FileConfiguration config) {
         long minInterval = Math.max(100L, config.getLong("visitors.spawn-interval-min-ticks", 1200L));
         long maxInterval = Math.max(minInterval, config.getLong("visitors.spawn-interval-max-ticks", 2400L));
         long walletMin = Math.max(0L, config.getLong("visitors.wallet-min-minor", 300L));
+        java.util.Map<String, Integer> reserves = new java.util.LinkedHashMap<>();
+        reserves.put("wheat", Math.max(0, config.getInt("visitors.stock-reserves.wheat", 8)));
+        reserves.put("wheat_seeds", Math.max(0, config.getInt("visitors.stock-reserves.wheat_seeds", 8)));
+        reserves.put("carrot", Math.max(0, config.getInt("visitors.stock-reserves.carrot", 8)));
+        org.bukkit.configuration.ConfigurationSection reserveSection =
+                config.getConfigurationSection("visitors.stock-reserves");
+        if (reserveSection != null) {
+            for (String itemKey : reserveSection.getKeys(false)) {
+                if (!itemKey.isBlank()) reserves.put(itemKey, Math.max(0, reserveSection.getInt(itemKey)));
+            }
+        }
         return new VisitorSettings(
                 config.getBoolean("visitors.enabled", false),
                 Math.clamp(config.getInt("visitors.max-active", 3), 0, 16),
@@ -133,10 +158,58 @@ record LivingNpcConfig(
                 walletMin,
                 Math.max(walletMin, config.getLong("visitors.wallet-max-minor", 1500L)),
                 Math.clamp(config.getInt("visitors.max-purchase-items", 3), 1, 8),
+                reserves,
                 Math.max(40L, config.getLong("visitors.shopping-duration-ticks", 120L)),
                 Math.max(600L, config.getLong("visitors.lifetime-ticks", 2400L)),
                 Math.max(16.0, config.getDouble("visitors.activation-range", 64.0)));
     }
+
+     private static SeasonFiveSettings loadSeasonFive(FileConfiguration config) {
+        int followerMin = Math.clamp(config.getInt("season-5.caravan.follower-min", 1), 0, 2);
+        int followerMax = Math.clamp(config.getInt("season-5.caravan.follower-max", 2), followerMin, 2);
+        return new SeasonFiveSettings(
+                config.getBoolean("season-5.enabled", false),
+                Math.clamp(config.getInt("season-5.market-day.interval-days", 7), 1, 30),
+                Math.max(0, config.getInt("season-5.market-day.day-offset", 0)),
+                Math.floorMod(config.getLong("season-5.market-day.start-tick", 1000L), 24_000L),
+                Math.floorMod(config.getLong("season-5.market-day.end-tick", 12_000L), 24_000L),
+                followerMin,
+                followerMax,
+                Math.clamp(config.getDouble("season-5.caravan.pack-animal-chance", 0.5), 0.0, 1.0),
+                Math.clamp(config.getDouble("season-5.caravan.formation-spacing", 2.0), 1.5, 4.0));
+     }
+
+      private static SeasonTenSettings loadSeasonTen(FileConfiguration config) {
+         return new SeasonTenSettings(
+                 config.getBoolean("season-10.enabled", false),
+                 Math.floorMod(config.getLong("season-10.meals.breakfast.start-tick", 500L), 24_000L),
+                 Math.floorMod(config.getLong("season-10.meals.breakfast.end-tick", 2500L), 24_000L),
+                 Math.floorMod(config.getLong("season-10.meals.lunch.start-tick", 5500L), 24_000L),
+                 Math.floorMod(config.getLong("season-10.meals.lunch.end-tick", 7500L), 24_000L),
+                 Math.floorMod(config.getLong("season-10.meals.dinner.start-tick", 10500L), 24_000L),
+                 Math.floorMod(config.getLong("season-10.meals.dinner.end-tick", 12500L), 24_000L),
+                 Math.clamp(config.getInt("season-10.serving.demand-buffer", 2), 0, 16),
+                 Math.clamp(config.getInt("season-10.serving.max-batch-size", 8), 1, 64),
+                 Math.clamp(config.getInt("season-10.serving.visitor-quota-per-batch", 0), 0, 16),
+                 config.getBoolean("season-10.fallback-stored-food", true));
+      }
+
+      private static SeasonElevenSettings loadSeasonEleven(FileConfiguration config) {
+          java.util.Map<EconomicSeason, SeasonalEconomyModifiers> modifiers =
+                  new java.util.EnumMap<>(EconomicSeason.class);
+          for (EconomicSeason season : EconomicSeason.values()) {
+              String path = "season-11.modifiers." + season.name().toLowerCase();
+              modifiers.put(season, new SeasonalEconomyModifiers(
+                      Math.clamp(config.getInt(path + ".stock-target-percent", 100), 50, 200),
+                      Math.clamp(config.getInt(path + ".export-demand-percent", 100), 50, 200),
+                      Math.clamp(config.getInt(path + ".labor-priority-percent", 100), 50, 200)));
+          }
+          return new SeasonElevenSettings(
+                  config.getBoolean("season-11.enabled", false),
+                  Math.clamp(config.getInt("season-11.days-per-season", 7), 1, 30),
+                  Math.max(0L, config.getLong("season-11.start-day", 0L)),
+                  modifiers);
+      }
 
     private static SeatingSettings loadSeating(FileConfiguration config) {
         long minimum = Math.max(40L, config.getLong("seating.rest-duration-min-ticks", 100L));
@@ -145,5 +218,14 @@ record LivingNpcConfig(
                 minimum,
                 Math.max(minimum, config.getLong("seating.rest-duration-max-ticks", 240L)),
                 Math.clamp(config.getLong("seating.stand-duration-ticks", 8L), 1L, 40L));
+    }
+
+    private static NeedsSettings loadNeeds(FileConfiguration config) {
+        return new NeedsSettings(
+                config.getBoolean("needs.enabled", false),
+                Math.max(20L, config.getLong("needs.hunger-decay-ticks-per-point", 1200L)),
+                Math.max(20L, config.getLong("needs.thirst-decay-ticks-per-point", 800L)),
+                Math.clamp(config.getLong("needs.max-managed-delta-ticks", 1200L), 20L, 24_000L),
+                Math.max(200L, config.getLong("needs.save-interval-ticks", 1200L)));
     }
 }

@@ -85,7 +85,8 @@ class ResidentProfileTest {
 
     @Test
     void selectingResidentJobPreservesFarmerProgressAndSchedule() {
-        ResidentProfile profile = ResidentProfile.custom("Worker");
+        ResidentProfile profile = new ResidentProfile(
+                "worker", "Worker", "unspecified", "Worker", Set.of(ResidentRole.FARMER), "");
         UUID uuid = UUID.randomUUID();
         FarmerDefinition farmer = new FarmerDefinition(
                 uuid,
@@ -105,5 +106,13 @@ class ResidentProfileTest {
         assertEquals(40L, resident.progress(ResidentRole.FARMER).experience());
         assertEquals(new ResidentSchedule(1000, 12000), resident.schedules().get(ResidentRole.FARMER));
         assertEquals(0L, resident.progress(ResidentRole.RESIDENT).experience());
+    }
+
+    @Test
+    void customCitizensProfileStartsAsResident() {
+        ResidentProfile profile = ResidentProfile.adopted("Worker");
+
+        assertEquals(Set.of(ResidentRole.RESIDENT), profile.roles());
+        assertEquals(ResidentRole.RESIDENT, profile.primaryRole());
     }
 }

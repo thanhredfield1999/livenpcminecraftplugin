@@ -2,6 +2,7 @@ package vn.heomc.livingnpc;
 
 import java.util.Arrays;
 import java.util.List;
+import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.event.ClickEvent;
@@ -11,6 +12,7 @@ import org.bukkit.command.Command;
 import org.bukkit.command.CommandExecutor;
 import org.bukkit.command.CommandSender;
 import org.bukkit.command.TabCompleter;
+import org.bukkit.block.data.type.Bed;
 import org.bukkit.entity.Player;
 
 final class LivingNpcCommand implements CommandExecutor, TabCompleter {
@@ -210,6 +212,18 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
                 farmer.profile().title() + " | giới tính=" + farmer.profile().gender()
                         + " | nghề đang chạy=" + farmer.activeRole().storageKey(), NamedTextColor.GRAY));
         sender.sendMessage(Component.text("UUID: " + farmer.npcUuid(), NamedTextColor.DARK_GRAY));
+        org.bukkit.Location home = farmer.home().resolve();
+        boolean validBed = home != null && home.getBlock().getBlockData() instanceof Bed;
+        sender.sendMessage(Component.text(
+                "Giường ngủ=" + (validBed ? "HỢP LỆ" : "CHƯA GÁN hoặc block giường đã mất"),
+                validBed ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+        NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(farmer.npcUuid());
+        String worldTime = npc != null && npc.isSpawned()
+                ? Long.toString(npc.getEntity().getWorld().getTime()) : "không khả dụng";
+        sender.sendMessage(Component.text(
+                "Ngủ: worldTime=" + worldTime + " | phase=" + phase
+                        + " | quyết định=" + plugin.manager().sleepDebug(farmer.npcUuid()),
+                NamedTextColor.GRAY));
         sender.sendMessage(Component.text(
                 "Hồ sơ nhân vật=" + (farmer.enabled(BehaviorFlag.CHARACTER_PROFILE) ? "BẬT" : "TẮT"),
                 NamedTextColor.GRAY));
@@ -304,6 +318,9 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             case GOING_HOME -> "đang về nhà";
             case GOING_TO_BED -> "đang đi tới giường";
             case SLEEPING -> "đang ngủ";
+            case WAKING_UP -> "đang thức dậy";
+            case LEAVING_HOME -> "đang rời khỏi nhà";
+            case MORNING_ACTIVITY -> "đang bắt đầu buổi sáng";
             case SHELTERING -> "đang tránh nguy hiểm";
             case GOING_TO_FISHING_SPOT, CASTING_LINE, WAITING_FOR_BITE, REELING_IN -> "đang câu cá";
             case GOING_TO_WORK_STATION -> "đang đi tới trạm nghề";
@@ -359,6 +376,16 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
                             "list", "help", "create", "tiepnhan", "ganlang",
                             "cancel", "lang", "status", "remove", "reload").stream()
                     .filter(value -> value.startsWith(prefix))
+                    .toList();
+        }
+        if (args.length == 3
+                && (args[0].equalsIgnoreCase("tiepnhan") || args[0].equalsIgnoreCase("adopt")
+                        || args[0].equalsIgnoreCase("ganlang") || args[0].equalsIgnoreCase("assignvillage"))) {
+            String prefix = args[2].toLowerCase(java.util.Locale.ROOT);
+            return plugin.villages().villages().stream()
+                    .map(VillageDefinition::id)
+                    .filter(id -> id.toLowerCase(java.util.Locale.ROOT).startsWith(prefix))
+                    .sorted()
                     .toList();
         }
         return List.of();

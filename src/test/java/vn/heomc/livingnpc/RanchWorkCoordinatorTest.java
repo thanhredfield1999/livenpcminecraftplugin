@@ -45,4 +45,17 @@ class RanchWorkCoordinatorTest {
         assertTrue(coordinator.acquire(
                 "south", UUID.randomUUID(), new StoredLocation("other", 0, 64, 0, 0, 0), 6));
     }
+
+    @Test
+    void ownerMustReleaseBeforeClaimingADifferentPen() {
+        RanchWorkCoordinator coordinator = new RanchWorkCoordinator();
+        UUID rancher = UUID.randomUUID();
+        StoredLocation first = new StoredLocation("world", 0, 64, 0, 0, 0);
+        StoredLocation second = new StoredLocation("world", 20, 64, 0, 0, 0);
+
+        assertTrue(coordinator.acquire("village", rancher, first, 6));
+        assertFalse(coordinator.acquire("village", rancher, second, 6));
+        coordinator.release(rancher);
+        assertTrue(coordinator.acquire("village", rancher, second, 6));
+    }
 }

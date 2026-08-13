@@ -99,8 +99,9 @@ class NpcEconomyTest {
         UUID farmer = UUID.randomUUID();
         economy.addProduction(farmer, "village", "wheat", 5, 1);
 
-        VisitorPurchaseResult first = economy.visitorPurchase("village", "visitor:test", 600L, 3);
-        VisitorPurchaseResult duplicate = economy.visitorPurchase("village", "visitor:test", 600L, 3);
+        VisitorDemandSnapshot demand = economy.snapshotVisitorDemand("village", "visitor:test", 600L, 3);
+        VisitorPurchaseResult first = economy.visitorPurchase("village", demand);
+        VisitorPurchaseResult duplicate = economy.visitorPurchase("village", demand);
 
         assertEquals(2, first.purchased().get("wheat"));
         assertEquals(500L, first.spentMinor());
@@ -115,10 +116,53 @@ class NpcEconomyTest {
         assertTrue(economy.addVillageLoot(
                 "village", java.util.Map.of("wheat", 3, "carrot", 3, "potato", 3)));
 
-        VisitorPurchaseResult result = economy.visitorPurchase("village", "visitor:bounded", 10_000L, 3);
+        VisitorDemandSnapshot demand = economy.snapshotVisitorDemand("village", "visitor:bounded", 10_000L, 3);
+        VisitorPurchaseResult result = economy.visitorPurchase("village", demand);
 
         assertEquals(3, result.purchased().values().stream().mapToInt(Integer::intValue).sum());
         assertEquals(6, economy.villageAccount("village").inventorySize());
+    }
+
+    @Test
+    void visitorDemandIsSnapshottedOnceAndKeepsEssentialStockReserve() throws IOException {
+        NpcEconomy economy = economy(64, 32, false, 8);
+        UUID farmer = UUID.randomUUID();
+        assertTrue(economy.addProduction(farmer, "village", "wheat", 12, 1));
+
+        VisitorDemandSnapshot demand = economy.snapshotVisitorDemand("village", "visitor:reserve", 10_000L, 3);
+        assertEquals(3, demand.demand().get("wheat"));
+        assertTrue(economy.addProduction(farmer, "village", "wheat", 2, 1));
+
+        VisitorPurchaseResult result = economy.visitorPurchase("village", demand);
+
+        assertEquals(3, result.purchased().get("wheat"));
+        assertEquals(11, economy.villageAccount("village").quantity("wheat"));
+    }
+
+    @Test
+    void visitorCommitsEmptySnapshotOnceWhenDemandStockDisappears() throws IOException {
+        NpcEconomy economy = economy(64, 32);
+        assertTrue(economy.addVillageLoot("village", java.util.Map.of("wheat", 2)));
+        VisitorDemandSnapshot demand = economy.snapshotVisitorDemand("village", "visitor:depleted", 600L, 2);
+        assertTrue(economy.consumeVillageItem("village", "wheat", 2));
+
+        assertTrue(economy.visitorPurchase("village", demand).purchased().isEmpty());
+        assertTrue(economy.addVillageLoot("village", java.util.Map.of("wheat", 2)));
+        assertTrue(economy.visitorPurchase("village", demand).purchased().isEmpty());
+        assertEquals(2, economy.villageAccount("village").quantity("wheat"));
+    }
+
+    @Test
+    void shiftSaleLeavesConfiguredEssentialStockReserve() throws IOException {
+        NpcEconomy economy = economy(64, 32, false, 8);
+        UUID farmer = UUID.randomUUID();
+        assertTrue(economy.addProduction(farmer, "village", "wheat", 12, 1));
+
+        SaleResult sale = economy.sellAtShiftEnd(farmer, "village", 1);
+
+        assertEquals(4, sale.itemCount());
+        assertEquals(1_000L, sale.totalMinor());
+        assertEquals(8, economy.villageAccount("village").quantity("wheat"));
     }
 
     @Test
@@ -213,17 +257,50 @@ class NpcEconomyTest {
         assertEquals(1, economy.account(npc).roleProduction("crafter"));
     }
 
+    @Test
+     void recipeStockTargetPreventsInputConsumption() throws IOException {
+        NpcEconomy economy = economy(64, 32);
+        UUID npc = UUID.randomUUID();
+        assertTrue(economy.addVillageLoot("village", java.util.Map.of("wheat", 6, "bread", 2)));
+
+        assertFalse(economy.transformVillageItems(
+                npc, "village", ResidentRole.COOK, java.util.Map.of("wheat", 3),
+                "bread", 1, 2, 12, 1));
+
+        assertEquals(6, economy.villageAccount("village").quantity("wheat"));
+        assertEquals(2, economy.villageAccount("village").quantity("bread"));
+         assertEquals(0, economy.account(npc).roleProduction("cook"));
+     }
+
+     @Test
+     void seasonTenFoundationStaysDisabledWithoutExplicitConfig() {
+         LivingNpcConfig config = LivingNpcConfig.load(new YamlConfiguration());
+
+         assertFalse(config.seasonTen().enabled());
+         assertEquals(2, config.seasonTen().demandBuffer());
+         assertEquals(8, config.seasonTen().maxBatchSize());
+         assertEquals(0, config.seasonTen().visitorQuotaPerBatch());
+         assertTrue(config.seasonTen().fallbackStoredFood());
+     }
+
     private NpcEconomy economy(int capacity, int quota) throws IOException {
         return economy(capacity, quota, false);
     }
 
     private NpcEconomy economy(int capacity, int quota, boolean unlimitedStorage) throws IOException {
+        return economy(capacity, quota, unlimitedStorage, 0);
+    }
+
+    private NpcEconomy economy(int capacity, int quota, boolean unlimitedStorage, int wheatReserve) throws IOException {
         Files.writeString(temporaryDirectory.resolve("prices.yml"), "npc-prices:\n  wheat: 2.5\n");
         YamlConfiguration yaml = new YamlConfiguration();
         yaml.set("economy.inventory-capacity", capacity);
         yaml.set("economy.unlimited-storage", unlimitedStorage);
         yaml.set("economy.output-per-action", 1);
         yaml.set("economy.max-output-per-shift", quota);
+        yaml.set("visitors.stock-reserves.wheat", wheatReserve);
+        yaml.set("visitors.stock-reserves.wheat_seeds", 0);
+        yaml.set("visitors.stock-reserves.carrot", 0);
         LivingNpcConfig config = LivingNpcConfig.load(yaml);
         return new NpcEconomy(
                 new NpcEconomyStore(temporaryDirectory.toFile(), Logger.getAnonymousLogger()),

@@ -119,6 +119,80 @@ final class VillageStore {
         return false;
     }
 
+    boolean addRanchPen(String id, Location location) {
+        VillageDefinition current = get(id);
+        if (current == null || current.ranchPens().size() >= 9
+                || !current.center().world().equals(location.getWorld().getName())
+                || ranchPenOverlaps(current, location, 6)) return false;
+        String penId = "ranch_" + java.util.stream.IntStream.rangeClosed(1, 9)
+                .filter(number -> current.ranchPens().stream().noneMatch(pen -> pen.id().equals("ranch_" + number)))
+                .findFirst().orElse(0);
+        VillageDefinition updated = current.withRanchPen(new RanchPen(penId, StoredLocation.from(location)));
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
+    boolean ranchPenOverlaps(VillageDefinition village, Location location, int radius) {
+        int combined = Math.max(1, radius) * 2;
+        return village.ranchPens().stream().anyMatch(pen -> pen.center().world().equals(location.getWorld().getName())
+                && Math.abs(pen.center().x() - location.getX()) <= combined
+                && Math.abs(pen.center().z() - location.getZ()) <= combined);
+    }
+
+    VillageDefinition overlappingRanchPen(String villageId, Location location, int radius) {
+        int combined = Math.max(1, radius) * 2;
+        return villages.values().stream()
+                .filter(village -> !village.id().equals(normalize(villageId)))
+                .filter(village -> village.ranchPens().stream().anyMatch(pen ->
+                        pen.center().world().equals(location.getWorld().getName())
+                                && Math.abs(pen.center().x() - location.getX()) <= combined
+                                && Math.abs(pen.center().z() - location.getZ()) <= combined))
+                .findFirst().orElse(null);
+    }
+
+    boolean removeRanchPen(String id, String penId) {
+        VillageDefinition current = get(id);
+        if (current == null) return false;
+        VillageDefinition updated = current.withoutRanchPen(penId);
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
+    boolean addMiningZone(String id, Location location) {
+        VillageDefinition current = get(id);
+        if (current == null || current.miningZones().size() >= 16
+                || !current.center().world().equals(location.getWorld().getName())) return false;
+        int number = java.util.stream.IntStream.rangeClosed(1, 16)
+                .filter(value -> current.miningZones().stream().noneMatch(zone -> zone.id().equals("mine_" + value)))
+                .findFirst().orElse(0);
+        MiningZone zone = new MiningZone("mine_" + number, StoredLocation.from(location.getBlock().getLocation()),
+                location.getBlockY() - 2, location.getBlockY() + 2);
+        if (villages.values().stream().flatMap(village -> village.miningZones().stream()).anyMatch(zone::overlaps)) return false;
+        VillageDefinition updated = current.withMiningZone(zone);
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
+    boolean removeMiningZone(String id, String zoneId) {
+        VillageDefinition current = get(id);
+        if (current == null) return false;
+        VillageDefinition updated = current.withoutMiningZone(zoneId);
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
     VillageDefinition overlappingWorkZone(
             String villageId, VillageWorkZoneType type, Location location, int radius) {
         if (type == null || location == null) return null;
@@ -201,6 +275,28 @@ final class VillageStore {
         return false;
     }
 
+    boolean addActivityPoint(String id, ActivityPoint point) {
+        VillageDefinition current = get(id);
+        if (current == null || point == null
+                || !current.center().world().equals(point.interaction().world())
+                || !current.center().world().equals(point.standing().world())) return false;
+        villages.put(current.id(), current.withActivityPoint(point));
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
+    boolean removeActivityPoint(String id, String pointId) {
+        VillageDefinition current = get(id);
+        if (current == null) return false;
+        VillageDefinition updated = current.withoutActivityPoint(pointId);
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
     private void load() {
         if (!file.exists()) {
             return;
@@ -255,6 +351,18 @@ final class VillageStore {
                         if (location != null && type != null) seats.add(new SeatDefinition(seatId, location, type));
                     }
                 }
+                java.util.ArrayList<RanchPen> ranchPens = new java.util.ArrayList<>();
+                ConfigurationSection ranchSection = section.getConfigurationSection("ranch-pens");
+                if (ranchSection != null) {
+                    for (String penId : ranchSection.getKeys(false)) {
+                        StoredLocation location = StoredLocation.load(
+                                ranchSection.getConfigurationSection(penId + ".center"));
+                        if (location != null && ranchPens.size() < 9) ranchPens.add(new RanchPen(penId, location));
+                    }
+                }
+                StoredLocation legacyRanch = workZones.get(VillageWorkZoneType.RANCH);
+                if (ranchPens.isEmpty() && legacyRanch != null) ranchPens.add(new RanchPen("ranch_1", legacyRanch));
+                workZones.remove(VillageWorkZoneType.RANCH);
                 java.util.ArrayList<MerchantStall> merchantStalls = new java.util.ArrayList<>();
                 ConfigurationSection stallSection = section.getConfigurationSection("merchant-stalls");
                 if (stallSection != null) {
@@ -271,6 +379,47 @@ final class VillageStore {
                         }
                     }
                 }
+                java.util.ArrayList<MiningZone> miningZones = new java.util.ArrayList<>();
+                ConfigurationSection miningSection = section.getConfigurationSection("mining-zones");
+                if (miningSection != null) for (String zoneId : miningSection.getKeys(false)) {
+                    ConfigurationSection storedMine = miningSection.getConfigurationSection(zoneId);
+                    StoredLocation corner = StoredLocation.load(
+                            storedMine == null ? null : storedMine.getConfigurationSection("corner"));
+                    if (corner == null || storedMine == null || miningZones.size() >= 16) continue;
+                    int minY = storedMine.getInt("min-y", (int) Math.floor(corner.y()) - 2);
+                    int maxY = storedMine.getInt("max-y", (int) Math.floor(corner.y()) + 2);
+                    if (minY <= maxY) miningZones.add(new MiningZone(zoneId, corner, minY, maxY));
+                }
+                java.util.ArrayList<ActivityPoint> activityPoints = new java.util.ArrayList<>();
+                ConfigurationSection activitySection = section.getConfigurationSection("activity-points");
+                if (activitySection != null) for (String pointId : activitySection.getKeys(false)) {
+                    ConfigurationSection storedPoint = activitySection.getConfigurationSection(pointId);
+                    ActivityPointType type = ActivityPointType.parse(
+                            storedPoint == null ? null : storedPoint.getString("type"));
+                    StoredLocation interaction = StoredLocation.load(
+                            storedPoint == null ? null : storedPoint.getConfigurationSection("interaction"));
+                    StoredLocation standing = StoredLocation.load(
+                            storedPoint == null ? null : storedPoint.getConfigurationSection("standing"));
+                    if (storedPoint == null || type == null || interaction == null || standing == null) continue;
+                    java.util.EnumSet<ResidentRole> roles = java.util.EnumSet.noneOf(ResidentRole.class);
+                    for (String roleKey : storedPoint.getStringList("allowed-roles")) {
+                        ResidentRole role = ResidentRole.parse(roleKey);
+                        if (role != null) roles.add(role);
+                    }
+                    java.util.UUID assignedNpc = null;
+                    String assignedValue = storedPoint.getString("assigned-npc");
+                    if (assignedValue != null) try {
+                        assignedNpc = java.util.UUID.fromString(assignedValue);
+                    } catch (IllegalArgumentException exception) {
+                        logger.warning("Bỏ qua assigned-npc không hợp lệ tại activity point " + pointId);
+                    }
+                    activityPoints.add(new ActivityPoint(
+                            pointId, type, interaction, standing,
+                            storedPoint.getInt("capacity", 1),
+                            storedPoint.contains("open-tick") ? storedPoint.getLong("open-tick") : null,
+                            storedPoint.contains("close-tick") ? storedPoint.getLong("close-tick") : null,
+                            roles, assignedNpc));
+                }
                 villages.put(id, new VillageDefinition(
                         id,
                         section.getString("name", id),
@@ -281,8 +430,11 @@ final class VillageStore {
                         StoredLocation.load(section.getConfigurationSection("visitor-gate")),
                         section.getInt("ranch-animal-limit", 8),
                         workZones,
+                        ranchPens,
                         seats,
-                        merchantStalls));
+                        merchantStalls,
+                        miningZones,
+                        activityPoints));
             }
         }
     }
@@ -313,7 +465,12 @@ final class VillageStore {
             }
             section.set("ranch-animal-limit", village.ranchAnimalLimit());
             for (Map.Entry<VillageWorkZoneType, StoredLocation> zone : village.workZones().entrySet()) {
+                if (zone.getKey() == VillageWorkZoneType.RANCH) continue;
                 zone.getValue().save(section.createSection("work-zones." + zone.getKey().storageKey()));
+            }
+            section.createSection("ranch-pens");
+            for (RanchPen pen : village.ranchPens()) {
+                pen.center().save(section.createSection("ranch-pens." + pen.id() + ".center"));
             }
             for (SeatDefinition seat : village.seats()) {
                 ConfigurationSection seatSection = section.createSection("seats." + seat.id());
@@ -329,6 +486,25 @@ final class VillageStore {
                 if (stall.buyerPoint() != null) {
                     stall.buyerPoint().save(stallSection.createSection("buyer-point"));
                 }
+            }
+            for (MiningZone zone : village.miningZones()) {
+                ConfigurationSection mineSection = section.createSection("mining-zones." + zone.id());
+                zone.corner().save(mineSection.createSection("corner"));
+                mineSection.set("min-y", zone.minY());
+                mineSection.set("max-y", zone.maxY());
+            }
+            for (ActivityPoint point : village.activityPoints()) {
+                ConfigurationSection pointSection = section.createSection("activity-points." + point.id());
+                pointSection.set("type", point.type().name());
+                pointSection.set("capacity", point.capacity());
+                pointSection.set("open-tick", point.openTick());
+                pointSection.set("close-tick", point.closeTick());
+                pointSection.set("allowed-roles", point.allowedRoles().stream()
+                        .map(ResidentRole::storageKey).sorted().toList());
+                pointSection.set("assigned-npc", point.assignedNpcUuid() == null
+                        ? null : point.assignedNpcUuid().toString());
+                point.interaction().save(pointSection.createSection("interaction"));
+                point.standing().save(pointSection.createSection("standing"));
             }
         }
         return AtomicYamlStore.save(yaml, file, logger, "villages.yml");

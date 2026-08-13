@@ -64,4 +64,19 @@ class ActiveRolePolicyTest {
 
         assertEquals(ResidentRole.SECURITY, selected);
     }
+
+    @Test
+    void ignoresRolesLockedByTheCurrentRelease() {
+        ResidentRole selected = ActiveRolePolicy.select(
+                EnumSet.of(ResidentRole.FARMER, ResidentRole.FISHER),
+                ResidentRole.FISHER,
+                Map.of(
+                        ResidentRole.FARMER, new ResidentSchedule(1000, 12000),
+                        ResidentRole.FISHER, new ResidentSchedule(1000, 12000)),
+                DEFAULT,
+                8000,
+                EnumSet.of(ResidentRole.RESIDENT, ResidentRole.FARMER));
+
+        assertEquals(ResidentRole.FARMER, selected);
+    }
 }

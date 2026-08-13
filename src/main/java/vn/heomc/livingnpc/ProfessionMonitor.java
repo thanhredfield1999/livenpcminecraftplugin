@@ -2,6 +2,7 @@ package vn.heomc.livingnpc;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.Locale;
 import java.util.UUID;
 import java.util.logging.Logger;
 import net.citizensnpcs.api.CitizensAPI;
@@ -11,6 +12,7 @@ import org.bukkit.Location;
 final class ProfessionMonitor {
     private static final long STALL_TICKS = 200L;
     private static final long NAVIGATION_START_GRACE_TICKS = 20L;
+    private static final long HEALTH_REPORT_INTERVAL_TICKS = 1200L;
     private static final double MOVEMENT_EPSILON_SQUARED = 0.0625;
 
     private final FarmerManager residents;
@@ -22,6 +24,7 @@ final class ProfessionMonitor {
     private final Logger logger;
     private final Map<UUID, State> states = new HashMap<>();
     private final Map<UUID, ProfessionDiagnostic> diagnostics = new HashMap<>();
+    private long nextHealthReportTick = HEALTH_REPORT_INTERVAL_TICKS;
 
     ProfessionMonitor(
             FarmerManager residents, VillageStore villages, RancherManager ranchers,
@@ -50,6 +53,11 @@ final class ProfessionMonitor {
         }
         states.keySet().removeIf(uuid -> !current.contains(uuid));
         diagnostics.keySet().removeIf(uuid -> !current.contains(uuid));
+        if (serverTick >= nextHealthReportTick) {
+            reportHealth();
+            reportActivities();
+            nextHealthReportTick = serverTick + HEALTH_REPORT_INTERVAL_TICKS;
+        }
     }
 
     ProfessionDiagnostic diagnostic(UUID npcUuid) {
@@ -62,11 +70,27 @@ final class ProfessionMonitor {
         State state = states.computeIfAbsent(definition.npcUuid(), ignored -> new State(serverTick));
         if (npc == null || !npc.isSpawned()) return waiting(state, serverTick, "NPC chưa spawn");
         if (!definition.enabled(BehaviorFlag.MASTER)) return waiting(state, serverTick, "NPC hoạt động đang TẮT");
+        FarmerPhase phase = phase(definition);
+        Location current = npc.getEntity().getLocation();
+        if (phase == FarmerPhase.GOING_TO_BED || phase == FarmerPhase.SLEEPING) {
+            return inspectPhase(state, phase, current, npc, serverTick, config.navigationTimeoutTicks());
+        }
+        String sleep = residents.sleepDebug(definition.npcUuid());
+        if (sleepFailure(sleep)) {
+            return error(state, current, "Không thể ngủ: " + sleep);
+        }
+        if (FarmerRuntime.isBedtime(current.getWorld().getTime()) && "RETRY_COOLDOWN".equals(sleep)) {
+            return waiting(state, serverTick, "Đang chờ thử lại đường tới giường");
+        }
         String blocked = blockedReason(definition, npc, config);
         if (blocked != null) return waiting(state, serverTick, "Chưa đủ điều kiện: " + blocked);
 
-        FarmerPhase phase = phase(definition);
-        Location current = npc.getEntity().getLocation();
+        return inspectPhase(state, phase, current, npc, serverTick, config.navigationTimeoutTicks());
+    }
+
+    private ProfessionDiagnostic inspectPhase(
+            State state, FarmerPhase phase, Location current, NPC npc, long serverTick,
+            long navigationTimeoutTicks) {
         if (phase != state.lastPhase) {
             state.lastPhase = phase;
             state.phaseStartedTick = serverTick;
@@ -86,8 +110,10 @@ final class ProfessionMonitor {
                 && navigationGraceExpired(state.phaseStartedTick, serverTick)) {
             return error(state, current, "Phase " + phase + " nhưng Citizens navigator không chạy");
         }
-        if (serverTick - state.lastProgressTick >= STALL_TICKS) {
-            return error(state, current, "Bị kẹt ở phase " + phase + ", không tiến triển trong 10 giây");
+        long stallTicks = Math.max(STALL_TICKS, navigationTimeoutTicks);
+        if (serverTick - state.lastProgressTick >= stallTicks) {
+            return error(state, current, "Bị kẹt ở phase " + phase + ", không tiến triển trong "
+                    + Math.max(1L, stallTicks / 20L) + " giây");
         }
         return new ProfessionDiagnostic(ProfessionDiagnostic.Level.OK, "Đang di chuyển: " + phase);
     }
@@ -103,7 +129,18 @@ final class ProfessionMonitor {
                 || phase == FarmerPhase.GOING_TO_FISHING_SPOT || phase == FarmerPhase.GOING_TO_WORK_STATION
                 || phase == FarmerPhase.GOING_TO_MARKET || phase == FarmerPhase.GOING_TO_SCENIC
                 || phase == FarmerPhase.GOING_TO_SEAT
-                || phase == FarmerPhase.PATROLLING || phase == FarmerPhase.GOING_TO_STALL;
+                || phase == FarmerPhase.PATROLLING || phase == FarmerPhase.GOING_TO_STALL
+                || phase == FarmerPhase.SHELTERING;
+    }
+
+    static boolean sleepFailure(String sleepDebug) {
+        return "BED_NOT_FOUND_OR_OCCUPIED".equals(sleepDebug)
+                || "NO_SAFE_BED_STANDING_BLOCK".equals(sleepDebug)
+                || "BED_PATH_UNREACHABLE".equals(sleepDebug)
+                || "BED_NAVIGATION_FAILED".equals(sleepDebug)
+                || "SLEEP_REJECTED".equals(sleepDebug)
+                || "HOME_UNRESOLVED".equals(sleepDebug)
+                || "HOME_DIFFERENT_WORLD".equals(sleepDebug);
     }
 
     private FarmerPhase phase(FarmerDefinition definition) {
@@ -119,6 +156,9 @@ final class ProfessionMonitor {
     }
 
     private String blockedReason(FarmerDefinition definition, NPC npc, LivingNpcConfig config) {
+        if (!ReleasePolicy.roleEnabled(definition.activeRole())) {
+            return "nghề bị khóa trong Season " + ReleasePolicy.SEASON;
+        }
         if (definition.activeRole() == ResidentRole.RESIDENT) return null;
         VillageDefinition village = villages.get(definition.villageId());
         if (village == null) return "chưa thuộc làng hợp lệ";
@@ -182,9 +222,50 @@ final class ProfessionMonitor {
     private void reportTransition(
             FarmerDefinition definition, ProfessionDiagnostic previous, ProfessionDiagnostic current) {
         String prefix = "Theo dõi nghề " + definition.profile().name() + " [" + definition.npcUuid() + "]: ";
-        if (current.level() == ProfessionDiagnostic.Level.ERROR) logger.warning(prefix + current.message());
+        if (current.level() == ProfessionDiagnostic.Level.ERROR) {
+            logger.warning("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=ERROR "
+                    + prefix + current.message());
+        }
         else if (previous != null && previous.level() == ProfessionDiagnostic.Level.ERROR) {
-            logger.info(prefix + "đã phục hồi - " + current.message());
+            logger.info("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=RECOVERED "
+                    + prefix + "đã phục hồi - " + current.message());
+        }
+    }
+
+    private void reportHealth() {
+        long ok = diagnostics.values().stream()
+                .filter(diagnostic -> diagnostic.level() == ProfessionDiagnostic.Level.OK).count();
+        long waiting = diagnostics.values().stream()
+                .filter(diagnostic -> diagnostic.level() == ProfessionDiagnostic.Level.WAITING).count();
+        long errors = diagnostics.values().stream()
+                .filter(diagnostic -> diagnostic.level() == ProfessionDiagnostic.Level.ERROR).count();
+        logger.info("NPC_HEALTH total=" + diagnostics.size() + " ok=" + ok
+                + " waiting=" + waiting + " errors=" + errors);
+    }
+
+    private void reportActivities() {
+        for (FarmerDefinition definition : residents.definitions()) {
+            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            ProfessionDiagnostic diagnostic = diagnostic(definition.npcUuid());
+            if (npc == null || !npc.isSpawned()) {
+                logger.info("NPC_ACTIVITY uuid=" + definition.npcUuid() + " name=\""
+                        + definition.profile().name() + "\" role=" + definition.activeRole().storageKey()
+                        + " spawned=false sleep=" + residents.sleepDebug(definition.npcUuid())
+                        + " diagnostic=\"" + diagnostic.message() + "\"");
+                continue;
+            }
+            Location current = npc.getEntity().getLocation();
+            Location home = definition.home().resolve();
+            String homeDistance = home == null || !home.getWorld().equals(current.getWorld())
+                    ? "unavailable"
+                    : String.format(Locale.ROOT, "%.1f", Math.sqrt(home.distanceSquared(current)));
+            logger.info("NPC_ACTIVITY uuid=" + definition.npcUuid() + " name=\""
+                    + definition.profile().name() + "\" role=" + definition.activeRole().storageKey()
+                    + " world=" + current.getWorld().getName() + " worldTime=" + current.getWorld().getTime()
+                    + " phase=" + phase(definition) + " sleep=" + residents.sleepDebug(definition.npcUuid())
+                    + " pos=" + current.getBlockX() + "," + current.getBlockY() + "," + current.getBlockZ()
+                    + " homeDistance=" + homeDistance + " navigating=" + npc.getNavigator().isNavigating()
+                    + " diagnostic=\"" + diagnostic.message() + "\"");
         }
     }
 

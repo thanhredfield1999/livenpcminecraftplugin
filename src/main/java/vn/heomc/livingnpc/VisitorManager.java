@@ -13,6 +13,7 @@ final class VisitorManager {
     private static final String[] NAMES = {
             "Aldous", "Cedric", "Elowen", "Merek", "Rosamund", "Tobias", "Winifred", "Yvette"
     };
+    private static final String[] FOLLOWER_NAMES = {"Hộ tống", "Người đánh xe"};
     private final VillageStore villages;
     private final NpcEconomy economy;
     private final MerchantManager merchants;
@@ -29,7 +30,7 @@ final class VisitorManager {
         for (VisitorRuntime visitor : java.util.List.copyOf(active.values())) {
             if (!visitor.tick(serverTick, config, economy, merchants)) {
                 visitor.destroy();
-                merchants.release(visitor.merchantUuid());
+                merchants.release(visitor.merchantUuid(), visitor.visitId());
                 active.remove(visitor.uuid());
             }
         }
@@ -51,24 +52,34 @@ final class VisitorManager {
     void shutdown() {
         for (VisitorRuntime visitor : active.values()) {
             visitor.destroy();
-            merchants.release(visitor.merchantUuid());
+            merchants.release(visitor.merchantUuid(), visitor.visitId());
         }
         active.clear();
     }
 
     private void trySpawn(VillageDefinition village, long serverTick, LivingNpcConfig config) {
         Location gate = village.visitorGate() == null ? null : village.visitorGate().resolve();
-        MerchantStall stall = merchants.reserveOpenStall(village.id());
+        if (gate == null || !MarketDayPolicy.open(gate.getWorld().getFullTime(), config.seasonFive())) return;
+        String visitId = "visitor:" + UUID.randomUUID();
+        MerchantStall stall = merchants.reserveOpenStall(village.id(), visitId);
         Location market = stall == null ? null : stall.buyerPoint().resolve();
         if (gate == null || market == null || !gate.getWorld().equals(market.getWorld())
                 || !chunksLoaded(gate, market)) {
-            if (stall != null) merchants.release(stall.merchantUuid());
+            if (stall != null) merchants.release(stall.merchantUuid(), visitId);
             return;
         }
         double range = config.visitors().activationRange();
         if (gate.getWorld().getNearbyPlayers(gate, range).isEmpty()
                 && market.getWorld().getNearbyPlayers(market, range).isEmpty()) {
-            merchants.release(stall.merchantUuid());
+            merchants.release(stall.merchantUuid(), visitId);
+            return;
+        }
+        long wallet = ThreadLocalRandom.current().nextLong(
+                config.visitors().walletMinMinor(), config.visitors().walletMaxMinor() + 1L);
+        VisitorDemandSnapshot demand = economy.snapshotVisitorDemand(
+                village.id(), visitId, wallet, config.visitors().maxPurchaseItems());
+        if (demand.empty()) {
+            merchants.release(stall.merchantUuid(), visitId);
             return;
         }
         NPC npc = CitizensAPI.getTemporaryNPCRegistry().createNPC(
@@ -77,14 +88,37 @@ final class VisitorManager {
         npc.data().setPersistent(NPC.Metadata.SHOULD_SAVE, false);
         if (!npc.spawn(gate)) {
             npc.destroy();
-            merchants.release(stall.merchantUuid());
+            merchants.release(stall.merchantUuid(), visitId);
             return;
         }
-        long wallet = ThreadLocalRandom.current().nextLong(
-                config.visitors().walletMinMinor(), config.visitors().walletMaxMinor() + 1L);
+        java.util.List<NPC> presentation = spawnPresentation(gate, config.seasonFive());
         VisitorRuntime visitor = new VisitorRuntime(
-                npc, village.id(), gate, market, stall.merchantUuid(), wallet, serverTick, config);
+                npc, presentation, village.id(), gate, market, stall.merchantUuid(), demand, serverTick, config);
         active.put(visitor.uuid(), visitor);
+    }
+
+    private java.util.List<NPC> spawnPresentation(Location gate, SeasonFiveSettings settings) {
+        if (!settings.enabled()) return java.util.List.of();
+        java.util.ArrayList<NPC> members = new java.util.ArrayList<>();
+        int followers = ThreadLocalRandom.current().nextInt(settings.followerMin(), settings.followerMax() + 1);
+        for (int index = 0; index < followers; index++) {
+            NPC follower = spawnMember(EntityType.VILLAGER, FOLLOWER_NAMES[index], gate);
+            if (follower != null) members.add(follower);
+        }
+        if (ThreadLocalRandom.current().nextDouble() < settings.packAnimalChance()) {
+            NPC animal = spawnMember(EntityType.DONKEY, "Lừa thồ", gate);
+            if (animal != null) members.add(animal);
+        }
+        return members;
+    }
+
+    private NPC spawnMember(EntityType type, String name, Location gate) {
+        NPC member = CitizensAPI.getTemporaryNPCRegistry().createNPC(type, name);
+        member.setProtected(true);
+        member.data().setPersistent(NPC.Metadata.SHOULD_SAVE, false);
+        if (member.spawn(gate)) return member;
+        member.destroy();
+        return null;
     }
 
     private void scheduleNext(String villageId, long serverTick, VisitorSettings settings) {

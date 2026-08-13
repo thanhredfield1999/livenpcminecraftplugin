@@ -15,6 +15,8 @@ final class ResidentMenu implements InventoryHolder {
         TOWN_STORE,
         ACTIVITY_LIST,
         VILLAGE_WORK_ZONES,
+        RANCH_LIST,
+        MINING_ZONE_LIST,
         SEAT_LIST,
         RESIDENT_DETAIL,
         ROLE_LIST,
@@ -33,6 +35,8 @@ final class ResidentMenu implements InventoryHolder {
     private final Map<Integer, String> villagesBySlot = new HashMap<>();
     private final Map<Integer, VillageWorkZoneType> workZonesBySlot = new HashMap<>();
     private final Map<Integer, String> seatsBySlot = new HashMap<>();
+    private final Map<Integer, String> ranchPensBySlot = new HashMap<>();
+    private final Map<Integer, String> miningZonesBySlot = new HashMap<>();
     private final ResidentRole role;
     private final Inventory inventory;
 
@@ -102,6 +106,14 @@ final class ResidentMenu implements InventoryHolder {
 
     Map<Integer, String> seatsBySlot() {
         return seatsBySlot;
+    }
+
+    Map<Integer, String> ranchPensBySlot() {
+        return ranchPensBySlot;
+    }
+
+    Map<Integer, String> miningZonesBySlot() {
+        return miningZonesBySlot;
     }
 
     @Override

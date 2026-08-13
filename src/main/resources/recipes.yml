@@ -1,0 +1,85 @@
+recipes:
+  cooked_chicken:
+    role: cook
+    appliance: furnace
+    inputs:
+      chicken: 1
+    fuel:
+      coal: 1
+    output: cooked_chicken
+    amount: 1
+    cook-time-ticks: 200
+    servings: 1
+    nutrition: 45
+    hydration: 0
+    stock-target: 16
+    priority: 60
+    tool: wooden_shovel
+    action: Nấu thịt gà
+  cooked_cod:
+    role: cook
+    appliance: smoker
+    inputs:
+      cod: 1
+    fuel:
+      coal: 1
+    output: cooked_cod
+    amount: 1
+    cook-time-ticks: 100
+    servings: 1
+    nutrition: 40
+    hydration: 0
+    stock-target: 16
+    priority: 55
+    tool: wooden_shovel
+    action: Nấu cá tuyết
+  cooked_salmon:
+    role: cook
+    appliance: smoker
+    inputs:
+      salmon: 1
+    fuel:
+      coal: 1
+    output: cooked_salmon
+    amount: 1
+    cook-time-ticks: 100
+    servings: 1
+    nutrition: 45
+    hydration: 0
+    stock-target: 16
+    priority: 55
+    tool: wooden_shovel
+    action: Nấu cá hồi
+  iron_ingot:
+    role: crafter
+    inputs:
+      raw_iron: 1
+    output: iron_ingot
+    amount: 1
+    stock-target: 24
+    action: Luyện sắt
+  shears:
+    role: crafter
+    inputs:
+      iron_ingot: 2
+    output: shears
+    amount: 1
+    stock-target: 4
+    action: Chế tạo kéo
+  bread:
+    role: cook
+    appliance: furnace
+    inputs:
+      wheat: 3
+    fuel:
+      coal: 1
+    output: bread
+    amount: 1
+    cook-time-ticks: 160
+    servings: 1
+    nutrition: 35
+    hydration: 0
+    stock-target: 16
+    priority: 70
+    tool: wooden_shovel
+    action: Làm bánh mì
