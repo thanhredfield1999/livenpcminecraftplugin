@@ -72,6 +72,7 @@ final class ProfessionMonitor {
         if (!definition.enabled(BehaviorFlag.MASTER)) return waiting(state, serverTick, "NPC hoạt động đang TẮT");
         FarmerPhase phase = phase(definition);
         Location current = npc.getEntity().getLocation();
+        traceAction(definition, npc, state, phase, current, serverTick);
         if (phase == FarmerPhase.GOING_TO_BED || phase == FarmerPhase.SLEEPING) {
             return inspectPhase(state, phase, current, npc, serverTick, config.navigationTimeoutTicks());
         }
@@ -203,6 +204,37 @@ final class ProfessionMonitor {
                 || previous.distanceSquared(current) >= MOVEMENT_EPSILON_SQUARED;
     }
 
+    private void traceAction(
+            FarmerDefinition definition, NPC npc, State state, FarmerPhase phase,
+            Location current, long serverTick) {
+        boolean navigating = npc.getNavigator().isNavigating();
+        Location target = npc.getNavigator().getTargetAsLocation();
+        String targetKey = locationKey(target);
+        if (phase == state.tracedPhase && navigating == state.tracedNavigating
+                && targetKey.equals(state.tracedTarget)) return;
+
+        logger.info("NPC_ACTION uuid=" + definition.npcUuid() + " name=\""
+                + definition.profile().name() + "\" role=" + definition.activeRole().storageKey()
+                + " tick=" + serverTick + " phase=" + state.tracedPhase + "->" + phase
+                + " navigation=" + state.tracedNavigating + "->" + navigating
+                + " pos=" + locationKey(current) + " target=" + targetKey
+                + " targetDistance=" + distance(current, target));
+        state.tracedPhase = phase;
+        state.tracedNavigating = navigating;
+        state.tracedTarget = targetKey;
+    }
+
+    private static String locationKey(Location location) {
+        if (location == null || location.getWorld() == null) return "none";
+        return location.getWorld().getName() + ":" + location.getBlockX() + ","
+                + location.getBlockY() + "," + location.getBlockZ();
+    }
+
+    private static String distance(Location from, Location to) {
+        if (to == null || from.getWorld() == null || !from.getWorld().equals(to.getWorld())) return "unavailable";
+        return String.format(Locale.ROOT, "%.2f", Math.sqrt(from.distanceSquared(to)));
+    }
+
     private ProfessionDiagnostic waiting(State state, long serverTick, String message) {
         state.lastLocation = null;
         state.lastProgressTick = serverTick;
@@ -274,6 +306,9 @@ final class ProfessionMonitor {
         private long lastProgressTick;
         private FarmerPhase lastPhase;
         private long phaseStartedTick;
+        private FarmerPhase tracedPhase;
+        private boolean tracedNavigating;
+        private String tracedTarget = "none";
 
         private State(long serverTick) {
             lastProgressTick = serverTick;

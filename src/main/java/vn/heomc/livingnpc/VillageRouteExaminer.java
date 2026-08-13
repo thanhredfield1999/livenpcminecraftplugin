@@ -1,14 +1,25 @@
 package vn.heomc.livingnpc;
 
+import java.util.ArrayList;
+import java.util.List;
 import net.citizensnpcs.api.astar.pathfinder.BlockExaminer;
 import net.citizensnpcs.api.astar.pathfinder.BlockSource;
 import net.citizensnpcs.api.astar.pathfinder.PathPoint;
+import net.citizensnpcs.api.astar.pathfinder.VectorNode;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.util.Vector;
 
-final class VillageRouteExaminer implements BlockExaminer {
+final class VillageRouteExaminer implements BlockExaminer.ReplacementNeighbourGenerator {
+    @Override
+    public List<PathPoint> getNeighbours(BlockSource source, PathPoint point) {
+        if (!(point instanceof VectorNode node)) return null;
+        List<PathPoint> neighbours = new ArrayList<>(node.getNeighbours(source, point, true));
+        neighbours.removeIf(candidate -> isUnsupportedEdge(source, candidate));
+        return neighbours;
+    }
+
     @Override
     public float getCost(BlockSource source, PathPoint point) {
         Vector position = point.getVector();
@@ -27,10 +38,7 @@ final class VillageRouteExaminer implements BlockExaminer {
                 cost += 8.0F;
                 continue;
             }
-            Material adjacentSupport = source.getMaterialAt(adjacentX, y - 1, adjacentZ);
-            BlockData supportData = source.getBlockDataAt(adjacentX, y - 1, adjacentZ);
-            if (isAir(feet)
-                    && !canSupportRoute(adjacentSupport, supportData)) {
+            if (isUnsupportedEdge(source, adjacentX, y, adjacentZ, feet)) {
                 cost += 5.0F;
             }
         }
@@ -40,6 +48,28 @@ final class VillageRouteExaminer implements BlockExaminer {
     @Override
     public PassableState isPassable(BlockSource source, PathPoint point) {
         return PassableState.IGNORE;
+    }
+
+    static boolean isUnsupportedEdge(BlockSource source, PathPoint point) {
+        Vector position = point.getVector();
+        int x = position.getBlockX();
+        int y = position.getBlockY();
+        int z = position.getBlockZ();
+        for (int[] offset : CARDINAL_OFFSETS) {
+            int adjacentX = x + offset[0];
+            int adjacentZ = z + offset[1];
+            Material feet = source.getMaterialAt(adjacentX, y, adjacentZ);
+            if (isUnsupportedEdge(source, adjacentX, y, adjacentZ, feet)) return true;
+        }
+        return false;
+    }
+
+    private static boolean isUnsupportedEdge(
+            BlockSource source, int adjacentX, int y, int adjacentZ, Material feet) {
+        if (!isAir(feet)) return false;
+        Material support = source.getMaterialAt(adjacentX, y - 1, adjacentZ);
+        BlockData supportData = source.getBlockDataAt(adjacentX, y - 1, adjacentZ);
+        return !canSupportRoute(support, supportData);
     }
 
     private static boolean isLiquid(Material material, BlockData data) {

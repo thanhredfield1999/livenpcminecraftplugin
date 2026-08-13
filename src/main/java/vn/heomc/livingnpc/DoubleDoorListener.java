@@ -1,7 +1,10 @@
 package vn.heomc.livingnpc;
 
+import java.util.HashMap;
 import java.util.HashSet;
+import java.util.Map;
 import java.util.Set;
+import java.util.UUID;
 import net.citizensnpcs.api.event.NPCOpenDoorEvent;
 import net.citizensnpcs.api.npc.NPC;
 import org.bukkit.Bukkit;
@@ -21,6 +24,7 @@ final class DoubleDoorListener implements Listener {
 
     private final LivingNpcPlugin plugin;
     private final Set<BlockKey> synchronizing = new HashSet<>();
+    private final Map<UUID, DoorTrace> lastTrace = new HashMap<>();
 
     DoubleDoorListener(LivingNpcPlugin plugin) {
         this.plugin = plugin;
@@ -32,10 +36,28 @@ final class DoubleDoorListener implements Listener {
         Block source = DoubleDoorSupport.bottom(event.getDoor());
         if (!withinOpeningRange(event.getNPC().getStoredLocation(), source.getLocation())) {
             event.setCancelled(true);
+            traceDoor(event.getNPC(), source, "BLOCKED_TOO_FAR");
             return;
         }
         if (synchronizing.contains(BlockKey.of(source))) return;
+        traceDoor(event.getNPC(), source, "ALLOWED");
         plugin.getServer().getScheduler().runTask(plugin, () -> openPartner(event.getNPC(), source));
+    }
+
+    private void traceDoor(NPC npc, Block door, String result) {
+        long tick = Bukkit.getCurrentTick();
+        DoorTrace trace = new DoorTrace(BlockKey.of(door), result, tick);
+        DoorTrace previous = lastTrace.get(npc.getUniqueId());
+        if (previous != null && previous.key().equals(trace.key()) && previous.result().equals(result)
+                && tick - previous.tick() < 20L) return;
+        lastTrace.put(npc.getUniqueId(), trace);
+        Location location = npc.getStoredLocation();
+        String position = location == null || location.getWorld() == null ? "none"
+                : location.getWorld().getName() + ":" + location.getBlockX() + ","
+                        + location.getBlockY() + "," + location.getBlockZ();
+        plugin.getLogger().info("NPC_DOOR uuid=" + npc.getUniqueId() + " result=" + result
+                + " npcPos=" + position + " door=" + trace.key().world() + ":"
+                + trace.key().x() + "," + trace.key().y() + "," + trace.key().z());
     }
 
     static boolean withinOpeningRange(Location npcLocation, Location doorLocation) {
@@ -100,5 +122,8 @@ final class DoubleDoorListener implements Listener {
         static BlockKey of(Block block) {
             return new BlockKey(block.getWorld().getName(), block.getX(), block.getY(), block.getZ());
         }
+    }
+
+    private record DoorTrace(BlockKey key, String result, long tick) {
     }
 }

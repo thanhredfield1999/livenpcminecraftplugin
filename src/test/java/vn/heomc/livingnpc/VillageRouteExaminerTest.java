@@ -1,12 +1,14 @@
 package vn.heomc.livingnpc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 
 import net.citizensnpcs.api.astar.pathfinder.BlockSource;
 import net.citizensnpcs.api.astar.pathfinder.PathPoint;
+import net.citizensnpcs.api.astar.pathfinder.VectorNode;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.util.Vector;
@@ -42,6 +44,30 @@ class VillageRouteExaminerTest {
         when(edge.getMaterialAt(1, 0, 0)).thenReturn(Material.AIR);
 
         assertEquals(5.0F, examiner.getCost(edge, pointAt(0, 1, 0)));
+    }
+
+    @Test
+    void identifiesUnsupportedEdgeNodesForNeighbourFiltering() {
+        BlockSource safe = flatSource(Material.DIRT_PATH);
+        BlockSource edge = flatSource(Material.DIRT_PATH);
+        when(edge.getMaterialAt(1, 0, 0)).thenReturn(Material.AIR);
+
+        assertFalse(VillageRouteExaminer.isUnsupportedEdge(safe, pointAt(0, 1, 0)));
+        assertTrue(VillageRouteExaminer.isUnsupportedEdge(edge, pointAt(0, 1, 0)));
+    }
+
+    @Test
+    void removesUnsupportedEdgeNodesFromCitizensNeighbours() {
+        BlockSource source = flatSource(Material.DIRT_PATH);
+        PathPoint safe = pointAt(0, 1, 0);
+        PathPoint edge = pointAt(2, 1, 0);
+        when(source.getMaterialAt(3, 0, 0)).thenReturn(Material.AIR);
+        VectorNode current = mock(VectorNode.class);
+        when(current.getNeighbours(source, current, true)).thenReturn(java.util.List.of(safe, edge));
+
+        java.util.List<PathPoint> filtered = examiner.getNeighbours(source, current);
+
+        assertEquals(java.util.List.of(safe), filtered);
     }
 
     private BlockSource flatSource(Material support) {
