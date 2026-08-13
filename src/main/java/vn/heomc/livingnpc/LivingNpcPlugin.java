@@ -24,6 +24,7 @@ public final class LivingNpcPlugin extends JavaPlugin {
     private ProductionRecipeRegistry recipes;
     private MiningRestorationStore miningRestorations;
     private CookingSessionStore cookingSessions;
+    private DoubleDoorListener doorListener;
     private BukkitTask tickTask;
     private long serverTick;
     private long nextEconomyFlushTick = 1200L;
@@ -66,7 +67,8 @@ public final class LivingNpcPlugin extends JavaPlugin {
         residentGui = new ResidentGui(this);
         getServer().getPluginManager().registerEvents(residentGui, this);
         getServer().getPluginManager().registerEvents(new LinkedBlockListener(this), this);
-        getServer().getPluginManager().registerEvents(new DoubleDoorListener(this), this);
+        doorListener = new DoubleDoorListener(this);
+        getServer().getPluginManager().registerEvents(doorListener, this);
         if (ReleasePolicy.seasonNineRuntimesEnabled()) {
             getServer().getPluginManager().registerEvents(new CookingApplianceLockListener(cookingSessions), this);
         }
@@ -105,6 +107,9 @@ public final class LivingNpcPlugin extends JavaPlugin {
         }
         if (merchantManager != null) {
             merchantManager.shutdown();
+        }
+        if (doorListener != null) {
+            doorListener.shutdown();
         }
         if (needsManager != null) {
             needsManager.shutdown();
