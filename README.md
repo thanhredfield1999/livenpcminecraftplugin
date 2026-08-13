@@ -2,6 +2,12 @@
 
 Paper plugin MVP for persistent Citizens farmers. It is intentionally separate from the Mineflayer tester in the repository root.
 
+## Current Release Candidate: Season 2
+
+Season 2 enables `Người dân`, `Nông dân`, `Ngư dân` and `Chăn nuôi`. Source and saved data for later professions are retained, but their listeners, global ticks, scheduler selection, GUI selection and readiness are locked so they cannot affect the world in this release candidate. Combat and network dialogue also remain disabled.
+
+The failed Season 1-5 baseline audit is recorded in `SEASON_1_5_AUDIT.md`. Since that audit, source has moved to a Season 2 release candidate. Season 2 is not a final release until Fisher/Rancher smoke, restart, cleanup and performance gates pass on the target Paper server. Season 3 and later remain source-only and disabled.
+
 ## Target
 
 - Paper `1.21.11` (verified server build `1.21.11-131`)
@@ -30,7 +36,21 @@ LivingNPC uses assigned beds for sleep and village seats for rest and lunch. A c
 ./gradlew.bat clean test build
 ```
 
-Output: `build/libs/living-npc-0.5.0-SNAPSHOT.jar`.
+Output: `build/libs/living-npc-0.6.0-rc.2.jar`.
+
+To build, back up the live plugin, deploy the JAR, start Paper and check NPC runtime logs automatically:
+
+```powershell
+.\tools\build-deploy-smoke.ps1
+```
+
+The check waits for Paper and LivingNPC startup, then observes `logs/latest.log` for three minutes. Exit code `0` means at least one active NPC runtime was healthy, `1` means startup/runtime failure, and `2` means startup was clean but no active NPC runtime was observed (for example, no nearby player or the NPC was outside its shift). Paper remains running after the check. Stop it cleanly before running the script again; the script never hot-reloads a JAR.
+
+To re-check the current server without building, deploying or restarting it:
+
+```powershell
+.\tools\build-deploy-smoke.ps1 -CheckOnly
+```
 
 Important behavior controls are in `plugins/LivingNPC/config.yml`: `activation-range`, `danger-range`, the work window, bounded scan interval, inspection duration, ambient timing/player notice/wander radius and Citizens navigation parameters.
 
@@ -46,14 +66,21 @@ After installing the jar and restarting Paper, use only `/lnpc` for normal setup
 
 While the plugin is waiting for a right-clicked block, type `/lnpc cancel` in chat to cancel the placement.
 
-Each NPC has a job menu. `Người dân` provides normal village wandering and ambient behavior without production. `Nông dân` uses the configured plot and storage. `Ngư dân`, `Chăn nuôi`, `Đầu bếp`, `Thợ chế tạo`, `Thợ mỏ` and `Bảo vệ` have dedicated bounded runtimes and require their village work zones. `NPC hoạt động` is the shared on/off switch for the selected job.
+Each NPC has a job menu. Season 2 exposes `Người dân`, `Nông dân`, `Ngư dân` and `Chăn nuôi`. `NPC hoạt động` is the shared on/off switch for the selected job.
 
-Village infrastructure is configured from `Khu nghề & khách vãng lai`:
+Season 2 village infrastructure includes shared living points plus fishing and ranch work zones. Later-season work zones remain stored but are hidden and inactive.
+
+Later-season source currently includes:
+
+- Season 10 has a source-only, disabled foundation for breakfast/lunch/dinner windows, batched meal demand and idempotent in-memory serving reservations. It is intentionally not connected to the scheduler or village stock until the Season 7-9 needs, kitchen and persistent cooking journal layers exist.
+- Season 11 has a source-only, disabled economic-season policy for configurable Spring/Summer/Autumn/Winter cycles and immutable stock-target, export-demand and labor-priority modifiers. It does not change live stock, production or role scheduling.
 
 - Woodworking requires a stonecutter and crafting table.
 - Cooking requires a furnace and crafting table.
 - Crafting requires a crafting table, smithing table and any usable anvil variant.
 - Stations must be inside the bounded validation area around the selected center before the zone can be saved.
+- Cook/Crafter recipes and stock targets are loaded from `plugins/LivingNPC/recipes.yml`. Invalid recipes are skipped; a cyclic recipe graph disables production fail-closed until fixed and `/lnpc reload` is run.
+- Mining uses a validated `Trạm mỏ` plus up to 16 manually placed `Khu đào 2x2` per village. Left-click the mining infrastructure item to place the station; right-click it to manage mining zones. Miner scans only the four configured columns, temporarily depletes a real block, journals it, and restores it later without overwriting player changes.
 - Ranching requires a hay bale plus any fence or fence gate. Ranchers consume village virtual-store food to put two ready adults into vanilla love mode: wheat for cows/sheep, wheat seeds for chickens and carrots for pigs.
 - Ranch zones are shared village infrastructure rather than per-NPC assignments. Cow, sheep, chicken, pig and rabbit breeding is supported; rabbits use carrots. One rancher owns the zone operation at a time, and overlapping ranch zones from another village are rejected so two NPCs cannot select the same herd concurrently.
 - Each village has a configurable per-species animal limit, default 8. Above the limit, a rancher handles at most 2 surplus adults per cycle while preserving at least two adult breeders. Actual mob death drops are captured into village virtual storage without duplicating ground drops.
@@ -62,7 +89,9 @@ Village infrastructure is configured from `Khu nghề & khách vãng lai`:
 - `Ghế nghỉ & bàn ăn` stores shared village seats. Click `Thêm ghế`, then right-click a Stair. A Stair without a solid block in front becomes a rest seat; one facing a solid table block becomes a dining seat. The Stair direction fixes the NPC's seated yaw.
 - Villages can have unlimited delivery chests/barrels. Workers sort valid points by distance, require safe standing space and a real Citizens path, skip blocked/high/unloaded points, and try the next location when navigation fails. Stuck teleport is disabled.
 
-`Khách vãng lai` is a temporary, non-selectable NPC role. The admin must set both `Cổng khách` and `Điểm chợ`. Guests spawn exactly at that gate, walk to the market, buy bounded quantities of priced virtual-store goods using their own generated wallet, credit the village balance, walk back to the same gate and are destroyed only after arriving. Guests are not persisted across restarts.
+`Khách vãng lai` is a temporary, non-selectable NPC role. The admin must set a `Cổng khách` and at least one resident `Dân buôn` must have a complete seller/buyer stall. Guests reserve one open stall, snapshot their wallet and item demand once, walk from the gate to that stall, commit at most one journaled purchase while the merchant remains open, then return to the same gate. Guests and their finite wallets are not persisted across restarts.
+
+Visitor sales and end-of-shift auto-sales preserve the essential village stock configured under `visitors.stock-reserves`. Defaults keep 8 wheat, 8 wheat seeds and 8 carrots available for farming and ranching. Visitor spawning remains disabled by default and is capped at three active visitors server-wide.
 
 If no village exists yet, create it once with `/lnpc lang tao <id> <tên>`. All older commands remain available for advanced administration but are not part of the normal workflow.
 

@@ -10,12 +10,12 @@ Chi tap trung vao **LivingNPC doi thuong, nhan vat, quan he, nghe nghiep, GUI va
 
 ## Project Va Version
 
-- Source: `E:\AI.WORK\botcheckerminecraft\living-npc-plugin`
+- Source: `E:\AI.WORK\living-npc-plugin`
 - GitHub chinh cua plugin: `https://github.com/thanhredfield1999/livenpcminecraftplugin`
 - Remote local: `livingnpc`
 - Server live: `F:\minecraftserver\villagedefense2026`
-- JAR live: `F:\minecraftserver\villagedefense2026\plugins\living-npc-0.5.0-SNAPSHOT.jar`
-- LivingNPC: `0.5.0-SNAPSHOT`
+- JAR live before the next deployment: `F:\minecraftserver\villagedefense2026\plugins\living-npc-0.5.0-SNAPSHOT.jar`
+- Source va live release candidate: `0.6.0-rc.2`.
 - Paper: `1.21.11-131`
 - Java build target: `21`; server dang chay Java `25.0.1`
 - Citizens: `2.0.42-SNAPSHOT` build `4173`
@@ -23,14 +23,14 @@ Chi tap trung vao **LivingNPC doi thuong, nhan vat, quan he, nghe nghiep, GUI va
 
 ## Trang Thai Live Hien Tai
 
-- Server dang chay, port `11619` listen boi Java PID `18924` sau lan start luc `14:32` ngay `2026-08-12`.
-- JAR cuoi da deploy va smoke test thanh cong; Paper `Done (28.669s)` luc `14:32:28`.
-- JAR live SHA-256: `291A2CC5C2F2714615C1BF9B71857D646A5B081B3E8D991F95C86C226FB998CB`.
+- Season 2 RC `0.6.0-rc.1` da deploy luc `23:26` ngay `2026-08-13` sau khi xac nhan Paper dung sach.
+- Paper khoi dong thanh cong: `Done (30.089s)` luc `23:26:44`; LivingNPC ghi dung marker `LivingNPC Season 2 enabled` va khong co ERROR/Exception.
+- JAR live SHA-256: `3743BE7ABD7AFE3FEFDA455661DBF8073F8BF29FEBC09B191474AF96656C43E2`.
 - JAR live da co hai fix quan trong:
   - NPC `LOOKING_AROUND` nhin ngang tam mat, khong con de bi nguoc len troi.
   - Khong xoa `farmers.yml` khi LivingNPC enable truoc luc Citizens nap xong registry.
-- Backup gan nhat: `F:\minecraftserver\villagedefense2026\plugins\LivingNPC-backup-20260812-143126`.
-- Backup gom JAR cu va toan bo `plugins\LivingNPC`; hash 6 file YAML da doi chieu khop sau deploy.
+- Backup gan nhat: `F:\minecraftserver\villagedefense2026\plugins\LivingNPC-backup-20260813-232613`.
+- Backup gom JAR RC truoc do va toan bo `plugins\LivingNPC`; hash ca 8 file du lieu/config YAML da doi chieu khop sau deploy.
 - Combat source van ton tai de lam sau, nhung bootstrap/listener/tick/command combat khong con duoc dang ky trong ban deploy.
 - `economy.yml` live da migrate schema `3`, giu nguyen kho `wheat: 11`, `wheat_seeds: 21`; schema moi persist quota san luong theo nghe.
 - LivingNPC enable khong co ERROR/Exception; Oraxen bao khong co model/texture hong.
@@ -135,12 +135,27 @@ Model/persistence da co biography, personality, preferred weapon, goals va relat
 - Kho ao cua lang tam thoi vo han qua `economy.unlimited-storage: true` vi he thong ban chua hoan thien. Quota san luong theo ca/nghe van giu nguyen de tranh NPC san xuat vo han; doi flag ve `false` sau nay se bat lai `economy.inventory-capacity`.
 - Khu nghe (gom Khu chan nuoi) la ha tang dung chung theo lang, khong gan rieng tung NPC. Ranch runtime quet bounded radius 6, Y +/-3; ho tro bo/cuu/ga/lon/tho, thuc an wheat/wheat_seeds/carrot. Coordinator chi cho 1 NPC thao tac khu/bon dan chong lap moi luc; setup reject cung loai khu cua lang khac neu hai ban kinh bi chong.
 - Rancher khi ranh patrol diem dung an toan trong khu thay vi dung im. Runtime ghi nho UUID vat nuoi da tung o trong khu trong phien server; con bi xong trong recovery radius 12 duoc NPC dắt bang leash ve, khong teleport, khong nhan mob hoang va khong gian con dang bi player dắt. Citizens DoorExaminer tu mo/dong door va fence gate theo route; da bo timer LivingNPC mo cong them 60 tick de tranh cong mo lau lam xong them vat nuoi.
+- Multi-chuong la implementation chuan dung chung cho moi season, khong tao module/schema ban sao. Moi lang co toi da 9 `ranch-pens.<ranch-id>.center`; `work-zones.ranch` cu chi migrate mot lan thanh `ranch_1` va khong duoc ghi song song tro lai.
+- GUI `Chuong trai` list tung chuong, quet bounded radius 6/Y +/-3, hien tat ca loai + so luong; neu chi mot loai thi ten item hien loai va so luong. Click trai teleport admin toi chuong; Shift + click phai xoa; chuong cung/lang khac bi reject neu vung quet chong nhau.
+- Rancher luan phien cac chuong. Claim da chuyen tu khoa ca lang sang khoa theo vung chuong, nen nhieu Rancher co the lam song song tai cac chuong khong chong nhau; herd UUID duoc tach theo tung chuong de khong dat con tu chuong A sang B.
+- Rancher thu gom roleplay tung item entity san pham cho phep (`EGG`, `*_WOOL`): phai di toi item, nhin/vung tay roi moi dua vao tui; item co thrower bi bo qua de khong nhat do player nem. Tui day thi di giao kho va nha claim chuong.
+- Pathfinding season moi khong tao A* rieng: van dung Citizens Navigator + `DoorExaminer`. Rancher bo qua chuong khong hop le/khong co diem trong chuong ma Citizens toi duoc; khi lay thuc an hoac giao san pham se thu cac delivery chest theo khoang cach, bo chest khong co o dung/route hoac bi timeout, roi backoff va cho phep thu lai sau neu tat ca tam thoi bi chan. Khong teleport recovery.
 
 ## Viec Uu Tien Tiep Theo
 
+### Season 9 - Da bat dau foundation ngay 2026-08-13
+
+- Da them model `CookingSession` va phase `RESERVED -> LOADED -> COOKING -> COOKED -> COMMITTED`, cho phep rollback tu moi phase active.
+- `cooking-sessions.yml` schema 1 ghi nguyen tu, luu accounting input/fuel/output, loaded active ticks va snapshot tung slot de restart reconciliation sau nay.
+- Active appliance lock duoc nap ngay khi plugin enable. Listener da chan open/click/drag/hopper, pha block, piston va explosion doi voi block dang co session.
+- Journal hong/schema khong ho tro se khoa moi write fail-closed; khong tu sua hay ghi de file hong.
+- `season-9.enabled` mac dinh `false`. Chua noi Cook runtime vao lo that, chua reserve kho va chua tao session trong gameplay vi source hien chua co Season 7 WAL/needs va Season 8 KitchenDefinition/MealRequest.
+- Khong duoc bat real cooking hoac deploy nhu Season 9 hoan chinh truoc khi Season 6-8 dat tieu chi thoat trong `NEXT_SEASONS_ROADMAP.md`.
+- Unit test foundation: lifecycle, persistence/reload, claim collision, terminal unlock, corrupt schema, slot snapshot, InventoryOpen va hopper lock.
+
 1. In-game test GUI: Shift + click phai NPC, xem Chan nuoi/Ngu dan, kiem tra kinh den va tat ca nut dung slot.
 2. Dat `Diem cau` tai khu co nuoc va bo dung an toan; chon Ngu dan, test duong di -> tha cau -> cho -> keo -> ca vao kho.
-3. Phat trien patrol `DIRT_PATH` cho Nguoi dan: cache theo lang, scan 30 giay, radius 32, cap 512 block, chunked scan; hien tai Nguoi dan van chi wander quanh nha.
+3. Smoke test multi-chuong/pathfinding Rancher: mot chuong hop le + mot chuong bi chan, hai delivery chest trong do chest gan bi chan; xac nhan NPC bo qua target loi, di qua door/fence gate, lay thuc an/giao san pham tai chest du phong va khong teleport.
 4. Smoke test daily plan Farmer: kiem tra dang lam -> ve nha nghi trua -> tu quay lai ruong; sau do moi can nhac rancher morning round/patrol/report va fisher giao kho animation.
 5. Kiem tra wheat/carrot/potato/beetroot va kho/tien tach biet giua hai lang bang GUI.
 
@@ -244,11 +259,14 @@ SAN SANG - bat dau o tick ke tiep khi dung ca
 ## Build Va Git
 
 - Command: `.\gradlew.bat clean test build --console=plain`
-- Source hien tai: full `clean test build` thanh cong ngay `2026-08-12`; co them test bien daily plan Farmer cho ca ngay va ca qua nua dem.
+- Source hien tai: full `clean test build` thanh cong ngay `2026-08-13`; co test multi-chuong, san pham Rancher, dialogue va fallback pathfinding delivery chest.
 - Source build SHA-256: `2DCD47EDD29EFBC30C4973D95421A80C41D1AACD1A2C6D1703054C1F6222C827`.
 - Chu y: source build moi hon JAR live vi co combat thu nghiem; **khong deploy nguyen JAR nay neu muc tieu la tam hoan combat**.
 - Khi commit/push plugin dung repo `livenpcminecraftplugin`; khong dua bot tester Node.js vao repo plugin.
 - Author local repo: `thanhredfield1999 <thanhredfield1999@users.noreply.github.com>`.
+- Pathfinding hardening ngay `2026-08-13`: test rieng `RancherPathfindingPolicyTest`, `RanchProductPolicyTest`, `RanchWorkCoordinatorTest` thanh cong. Chua deploy/restart production; van can smoke test Citizens route qua door/fence gate va fallback chest tren server test/live co backup.
+- Season 10 foundation ngay `2026-08-13`: them `SeasonTenSettings`, policy breakfast/lunch/dinner, demand snapshot batch va `ServingLedger` idempotent voi visitor quota rieng. `season-10.enabled` mac dinh `false`; khong dang ky scheduler/listener, khong debit kho va khong deploy live vi source chua co Season 6-9 (needs, kitchen, cooking journal). Test foundation va full build can duoc giu xanh truoc khi noi runtime sau nay.
+- Season 11 foundation ngay `2026-08-13`: them chu ky `SPRING/SUMMER/AUTUMN/WINTER` theo world full-time, snapshot cycle/day-in-season va modifier stock target/export demand/labor priority. `season-11.enabled` mac dinh `false`; khong noi scheduler/planner, khong sua kho, demand, output hay role live truoc khi Season 10 dat gate.
 
 ## Quy Tac An Toan
 
@@ -258,3 +276,12 @@ SAN SANG - bat dau o tick ke tiep khi dung ca
 - Khong ghi API key vao source/YAML/log.
 - Khong de role chua hoan thien mutate world.
 - Khong scan entity/block toan world; moi discovery phai bounded va rate-limited.
+# Current Release Gate
+
+- Source is now Season 2 release candidate `0.6.0-rc.2`.
+- Enabled roles: `RESIDENT`, `FARMER`, `FISHER`, `RANCHER`.
+- Season 3 and later runtimes remain release-gated.
+- Season 2 still requires controlled Paper smoke, restart, cleanup and performance evidence before final release.
+- Lan quan sat tu dong dau tien sau deploy la `INCONCLUSIVE`, khong phai failure: `NPC_HEALTH total=10 ok=0 waiting=10 errors=0`; ca 10 NPC deu `spawned=false` vi khong co player tren server. Can player vao gan lang roi chay `tools\build-deploy-smoke.ps1 -CheckOnly` de lay bang chung Fisher/Rancher.
+- RC2 them Citizens route cost dung chung: uu tien DIRT_PATH, tranh nuoc va mep rong, khong chon buoc roi; Fisher chi nhan diem cau co vung dung an toan va toi tam block voi margin 0.4.
+- RC2 da deploy luc `23:56` ngay `2026-08-13`; Paper `Done (35.923s)`, khong co LivingNPC ERROR/Exception. Live SHA-256 `60850B45CE118B883DF81F07109B88483703EB1375C296497F0B51DE0D402E31`; backup RC1 + 8 YAML tai `F:\minecraftserver\villagedefense2026\plugins\LivingNPC-backup-20260813-235604`, tat ca YAML khop hash sau startup.
