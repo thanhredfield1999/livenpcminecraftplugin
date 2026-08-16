@@ -32,13 +32,15 @@ class ReleasePolicyTest {
     }
 
     @Test
-    void seasonTwoExposesOnlyFishingAndRanchInfrastructure() {
+    void seasonTwoExposesMiningSetupWithoutEnablingMinerRuntime() {
         assertTrue(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.FISHING));
         assertTrue(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.RANCH));
+        assertTrue(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.MINING));
+        assertFalse(ReleasePolicy.roleEnabled(ResidentRole.MINER));
+        assertFalse(ReleasePolicy.seasonFourRuntimesEnabled());
         assertFalse(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.WOOD));
         assertFalse(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.COOKING));
         assertFalse(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.CRAFTING));
-        assertFalse(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.MINING));
         assertFalse(ReleasePolicy.workZoneEnabled(VillageWorkZoneType.SECURITY));
     }
 }

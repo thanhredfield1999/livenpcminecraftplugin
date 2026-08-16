@@ -71,8 +71,17 @@ final class MerchantManager {
     }
 
     void shutdown() {
-        runtimes.values().forEach(MerchantRuntime::suspend);
+        RuntimeException failure = null;
+        for (MerchantRuntime runtime : java.util.List.copyOf(runtimes.values())) {
+            try {
+                runtime.suspend();
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
         runtimes.clear();
         reservations.clear();
+        if (failure != null) throw failure;
     }
 }

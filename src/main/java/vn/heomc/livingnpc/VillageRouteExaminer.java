@@ -55,13 +55,8 @@ final class VillageRouteExaminer implements BlockExaminer.ReplacementNeighbourGe
         int x = position.getBlockX();
         int y = position.getBlockY();
         int z = position.getBlockZ();
-        for (int[] offset : CARDINAL_OFFSETS) {
-            int adjacentX = x + offset[0];
-            int adjacentZ = z + offset[1];
-            Material feet = source.getMaterialAt(adjacentX, y, adjacentZ);
-            if (isUnsupportedEdge(source, adjacentX, y, adjacentZ, feet)) return true;
-        }
-        return false;
+        Material feet = source.getMaterialAt(x, y, z);
+        return isUnsupportedEdge(source, x, y, z, feet);
     }
 
     private static boolean isUnsupportedEdge(

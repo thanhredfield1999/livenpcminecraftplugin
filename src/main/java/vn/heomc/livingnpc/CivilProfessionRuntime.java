@@ -32,12 +32,15 @@ final class CivilProfessionRuntime {
     private long shiftKey = Long.MIN_VALUE;
     private Block miningBlock;
     private MiningZone miningZone;
+    private int miningBatchCount;
     private long miningStartedTick;
     private long nextMiningSwingTick;
+    private final java.util.Map<MiningZone, CachedMiningBlocks> miningBlockCache = new java.util.HashMap<>();
     private StoredLocation validatedZone;
     private VillageWorkZoneType validatedZoneType;
     private long validationExpiresTick;
     private boolean zoneValid;
+    private String miningDiagnostic = "Chưa bắt đầu runtime Miner";
 
     CivilProfessionRuntime(
             NPC npc, FarmerDefinition definition, NpcEconomy economy, VillageStore villages,
@@ -76,6 +79,10 @@ final class CivilProfessionRuntime {
         return phase;
     }
 
+    String miningDiagnostic() {
+        return miningDiagnostic;
+    }
+
     void tick(long serverTick, LivingNpcConfig config) {
         ResidentRole role = definition.activeRole();
         VillageWorkZoneType zoneType = zoneFor(role);
@@ -87,11 +94,14 @@ final class CivilProfessionRuntime {
         StoredLocation stored = village == null ? null : village.workZone(zoneType);
         Location center = stored == null ? null : stored.resolve();
         if (center == null || !npc.getEntity().getWorld().equals(center.getWorld())
-                || center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()) {
+                || !hasNearbyPlayer(center, village, role, config.activationRange())) {
             suspend();
             return;
         }
-        if (role == ResidentRole.MINER && village.miningZones().isEmpty()) {
+        if (role == ResidentRole.MINER && (village.miningZones().isEmpty()
+                || miningZone != null && !village.miningZones().contains(miningZone))) {
+            miningDiagnostic = village.miningZones().isEmpty()
+                    ? "Làng chưa có Khu đào 2x2" : "Khu đào đang dùng đã bị xóa; đã release claim";
             suspend();
             return;
         }
@@ -145,6 +155,20 @@ final class CivilProfessionRuntime {
         }
     }
 
+    private boolean hasNearbyPlayer(
+            Location center, VillageDefinition village, ResidentRole role, double range) {
+        if (!center.getWorld().getNearbyPlayers(center, range).isEmpty()
+                || !npc.getEntity().getWorld().getNearbyPlayers(npc.getEntity().getLocation(), range).isEmpty()) {
+            return true;
+        }
+        if (role != ResidentRole.MINER) return false;
+        for (MiningZone zone : village.miningZones()) {
+            Location corner = zone.corner().resolve();
+            if (corner != null && !corner.getWorld().getNearbyPlayers(corner, range).isEmpty()) return true;
+        }
+        return false;
+    }
+
     private boolean validZone(
             StoredLocation stored, Location center, VillageWorkZoneType zoneType,
             long serverTick, LivingNpcConfig config) {
@@ -171,6 +195,7 @@ final class CivilProfessionRuntime {
         station = null;
         miningBlock = null;
         miningZone = null;
+        miningBatchCount = 0;
         miningCoordinator.release(npc.getUniqueId());
         miningStartedTick = 0L;
         nextMiningSwingTick = 0L;
@@ -238,54 +263,151 @@ final class CivilProfessionRuntime {
                 nextActionTick = serverTick + config.miner().breakDelayTicks();
             } else if (!npc.getNavigator().isNavigating()
                     || serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
+                miningDiagnostic = "Không thể tới " + miningZone.id() + "; backoff tối thiểu 100 ticks";
+                backoffMiningZone(villageId, serverTick, config);
                 releaseWorkState();
                 nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             }
             return;
         }
         if (serverTick < nextActionTick) return;
-        miningBlock = findMiningBlock(villages.get(villageId));
+        VillageDefinition village = villages.get(villageId);
+        miningDiagnostic = "Đang chọn Khu đào và block hợp lệ";
+        miningBlock = findMiningBlock(village, serverTick, config);
+        if (miningBlock == null && miningZone != null) {
+            miningCoordinator.release(npc.getUniqueId());
+            miningZone = null;
+            miningBatchCount = 0;
+            miningBlock = findMiningBlock(village, serverTick, config);
+        }
         if (miningBlock == null) {
             phase = FarmerPhase.RESTING;
             nextActionTick = serverTick + config.miner().scanIntervalTicks();
             return;
         }
-        station = safeStandingNear(miningBlock.getLocation(), npc.getEntity().getLocation());
         if (station == null) {
             miningBlock = null;
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             return;
         }
         navigate(station, serverTick, config);
+        miningDiagnostic = "Đang đi tới " + miningZone.id() + " tại "
+                + miningBlock.getWorld().getName() + ":" + miningBlock.getX() + ","
+                + miningBlock.getY() + "," + miningBlock.getZ();
     }
 
-    private Block findMiningBlock(VillageDefinition village) {
+    private Block findMiningBlock(VillageDefinition village, long serverTick, LivingNpcConfig config) {
         if (village == null) return null;
         Location current = npc.getEntity().getLocation();
         java.util.List<MiningCandidate> candidates = new java.util.ArrayList<>();
+        int configuredZones = 0;
+        int loadedZones = 0;
+        int backedOffZones = 0;
         for (MiningZone zone : village.miningZones()) {
+            if (miningZone != null && !miningZone.equals(zone)) continue;
+            configuredZones++;
+            if (miningCoordinator.isBackedOff(npc.getUniqueId(), village.id(), zone.id(), serverTick)) {
+                backedOffZones++;
+                continue;
+            }
             Location corner = zone.corner().resolve();
-            if (corner == null || !corner.getWorld().isChunkLoaded(corner.getBlockX() >> 4, corner.getBlockZ() >> 4)) continue;
-            for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) {
-                for (int y = zone.maxY(); y >= zone.minY(); y--) {
-                    Block block = corner.getWorld().getBlockAt(corner.getBlockX() + x, y, corner.getBlockZ() + z);
-                    if (miningOutput(block.getType()).isEmpty()
-                            || !mutationPolicy.allows(block.getLocation(), MutationType.BREAK)) continue;
-                    Location standing = safeStandingNear(block.getLocation(), current);
-                    if (standing == null) continue;
-                    candidates.add(new MiningCandidate(block, zone, current.distanceSquared(standing)));
-                }
+            if (corner == null || !zone.chunksLoaded(corner.getWorld())) continue;
+            loadedZones++;
+            for (Block block : cachedMiningBlocks(zone, corner, serverTick)) {
+                if (miningOutput(block.getType()).isEmpty()) continue;
+                Location standing = safeStandingNear(block.getLocation(), current, false);
+                if (standing == null) continue;
+                candidates.add(new MiningCandidate(block, zone, standing, current.distanceSquared(standing)));
             }
         }
-        if (candidates.isEmpty()) return null;
+        if (candidates.isEmpty()) {
+            miningDiagnostic = loadedZones == 0
+                    ? backedOffZones == configuredZones && configuredZones > 0
+                            ? "Tất cả Khu đào đang trong path backoff"
+                            : "Tất cả world/chunk của Khu đào chưa load"
+                    : "Không còn block allowlist có ô đứng an toàn trong Khu đào đã load";
+            return null;
+        }
         candidates.sort(java.util.Comparator.comparingDouble(MiningCandidate::distanceSquared));
-        for (MiningCandidate candidate : candidates.stream().limit(4).toList()) {
-            if (miningCoordinator.claim(npc.getUniqueId(), candidate.zone().id())) {
-                miningZone = candidate.zone();
-                return candidate.block();
+        MiningSelection selection = selectMiningCandidate(
+                candidates, 4, miningZone != null,
+                candidate -> npc.getNavigator().canNavigateTo(candidate.standing()),
+                candidate -> {
+                    Block block = candidate.block();
+                    return miningCoordinator.claim(
+                            npc.getUniqueId(), village.id(), candidate.zone().id(), block.getWorld().getName(),
+                            block.getX(), block.getY(), block.getZ());
+                });
+        selection.routeFailures().forEach(zone -> miningCoordinator.backoff(
+                npc.getUniqueId(), village.id(), zone.id(),
+                serverTick + Math.max(100L, config.navigationRetryBackoffTicks())));
+        MiningCandidate selected = selection.selected();
+        if (selected == null) {
+            miningDiagnostic = selection.routeFailures().isEmpty()
+                    ? "Candidate hợp lệ đang được Miner khác claim"
+                    : "Không có route Citizens tới candidate; Khu đào đã vào backoff";
+            return null;
+        }
+        miningZone = selected.zone();
+        station = selected.standing();
+        return selected.block();
+    }
+
+    static MiningSelection selectMiningCandidate(
+            java.util.List<MiningCandidate> candidates, int limit, boolean stayInCurrentZone,
+            java.util.function.Predicate<MiningCandidate> routeAvailable,
+            java.util.function.Predicate<MiningCandidate> claimAvailable) {
+        java.util.List<MiningCandidate> pathCandidates = pathCandidates(candidates, limit, stayInCurrentZone);
+        java.util.Set<MiningZone> routeFailures = new java.util.HashSet<>();
+        for (MiningCandidate candidate : pathCandidates) {
+            if (!routeAvailable.test(candidate)) {
+                routeFailures.add(candidate.zone());
+                continue;
+            }
+            if (claimAvailable.test(candidate)) {
+                routeFailures.remove(candidate.zone());
+                return new MiningSelection(candidate, java.util.Set.copyOf(routeFailures), pathCandidates.size());
             }
         }
-        return null;
+        return new MiningSelection(null, java.util.Set.copyOf(routeFailures), pathCandidates.size());
+    }
+
+    private static java.util.List<MiningCandidate> pathCandidates(
+            java.util.List<MiningCandidate> candidates, int limit, boolean stayInCurrentZone) {
+        if (stayInCurrentZone) return candidates.stream().limit(limit).toList();
+        java.util.List<MiningCandidate> selected = new java.util.ArrayList<>(limit);
+        java.util.Set<MiningZone> represented = new java.util.HashSet<>();
+        for (MiningCandidate candidate : candidates) {
+            if (represented.add(candidate.zone())) selected.add(candidate);
+            if (selected.size() >= limit) return selected;
+        }
+        for (MiningCandidate candidate : candidates) {
+            if (!selected.contains(candidate)) selected.add(candidate);
+            if (selected.size() >= limit) break;
+        }
+        return selected;
+    }
+
+    private java.util.List<Block> cachedMiningBlocks(MiningZone zone, Location corner, long serverTick) {
+        CachedMiningBlocks cached = miningBlockCache.get(zone);
+        if (cached != null && serverTick < cached.expiresTick()) return cached.blocks();
+        java.util.List<Block> blocks = new java.util.ArrayList<>(20);
+        for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) {
+            for (int y = zone.maxY(); y >= zone.minY(); y--) {
+                Block block = corner.getWorld().getBlockAt(corner.getBlockX() + x, y, corner.getBlockZ() + z);
+                if (miningOutput(block.getType()).isPresent()
+                        && mutationPolicy.allows(block.getLocation(), MutationType.BREAK)) blocks.add(block);
+            }
+        }
+        java.util.List<Block> snapshot = java.util.List.copyOf(blocks);
+        miningBlockCache.put(zone, new CachedMiningBlocks(snapshot, serverTick + 200L));
+        return snapshot;
+    }
+
+    private void backoffMiningZone(String villageId, long serverTick, LivingNpcConfig config) {
+        if (miningZone == null) return;
+        miningCoordinator.backoff(npc.getUniqueId(), villageId, miningZone.id(),
+                serverTick + Math.max(100L, config.navigationRetryBackoffTicks()));
     }
 
     static boolean isProtectedFeature(Material material) {
@@ -305,6 +427,7 @@ final class CivilProfessionRuntime {
     private void breakMiningBlock(String villageId, long serverTick, LivingNpcConfig config) {
         Block block = miningBlock;
         if (block == null || !mutationPolicy.allows(block.getLocation(), MutationType.BREAK)) {
+            miningDiagnostic = "Block mục tiêu không còn được phép phá; đã release claim";
             releaseWorkState();
             return;
         }
@@ -314,13 +437,17 @@ final class CivilProfessionRuntime {
                 || !miningZone.contains(block.getWorld().getName(), block.getX(), block.getY(), block.getZ())
                 || !restorations.record(block, block.getBlockData(), temporary,
                         System.currentTimeMillis() + config.miner().restorationDelaySeconds() * 1000L)) {
+            miningDiagnostic = "Không thể ghi restoration journal cho " + block.getWorld().getName() + ":"
+                    + block.getX() + "," + block.getY() + "," + block.getZ() + "; Miner fail-closed";
             releaseWorkState();
             nextActionTick = serverTick + config.miner().scanIntervalTicks();
             return;
         }
         block.setType(temporary, false);
-        if (!economy.addRoleProduction(npc.getUniqueId(), villageId, ResidentRole.MINER, output.get(), 1,
+        miningBlockCache.remove(miningZone);
+        if (!economy.commitRoleProduction(npc.getUniqueId(), villageId, ResidentRole.MINER, output.get(), 1,
                 PRODUCTION_LIMIT, shiftKey)) {
+            miningDiagnostic = "Economy commit thất bại; block đã rollback và không cộng sản lượng";
             restorations.rollback(block);
             releaseWorkState();
             nextActionTick = serverTick + config.miner().scanIntervalTicks();
@@ -333,20 +460,32 @@ final class CivilProfessionRuntime {
         economy.recordActivity(npc.getUniqueId(), villageId, ResidentRole.MINER, "Khai thác", output.get(), 1);
         clearHand();
         miningBlock = null;
-        miningCoordinator.release(npc.getUniqueId());
-        miningZone = null;
         station = null;
         phase = FarmerPhase.RESTING;
-        nextActionTick = serverTick + config.miner().scanIntervalTicks();
+        miningBatchCount++;
+        miningDiagnostic = "Đã đào " + miningBatchCount + "/" + config.miner().batchSize()
+                + " block trong batch tại " + miningZone.id();
+        if (batchComplete(miningBatchCount, config.miner().batchSize())) {
+            miningCoordinator.release(npc.getUniqueId());
+            miningZone = null;
+            miningBatchCount = 0;
+            nextActionTick = serverTick + config.miner().scanIntervalTicks();
+        } else {
+            nextActionTick = serverTick + 1L;
+        }
     }
 
-    private java.util.Optional<String> miningOutput(Material material) {
+    static java.util.Optional<String> miningOutput(Material material) {
         return java.util.Optional.ofNullable(switch (material) {
-            case STONE, DEEPSLATE, COBBLESTONE, COBBLED_DEEPSLATE -> "cobblestone";
+            case STONE, DEEPSLATE -> "cobblestone";
             case COAL_ORE, DEEPSLATE_COAL_ORE -> "coal";
             case IRON_ORE, DEEPSLATE_IRON_ORE -> "raw_iron";
             default -> null;
         });
+    }
+
+    static boolean batchComplete(int completedBlocks, int batchSize) {
+        return completedBlocks >= batchSize;
     }
 
     private ProductionRecipe chooseRecipe(ResidentRole role, String villageId) {
@@ -417,13 +556,17 @@ final class CivilProfessionRuntime {
     }
 
     private Location safeStandingNear(Location center, Location current) {
+        return safeStandingNear(center, current, true);
+    }
+
+    private Location safeStandingNear(Location center, Location current, boolean requirePath) {
         Location best = null;
         double distance = Double.MAX_VALUE;
         for (int x = -2; x <= 2; x++) for (int z = -2; z <= 2; z++) {
             Block feet = center.getWorld().getBlockAt(center.getBlockX() + x, center.getBlockY(), center.getBlockZ() + z);
             if (!safe(feet)) continue;
             Location candidate = feet.getLocation().add(0.5, 0, 0.5);
-            if (!npc.getNavigator().canNavigateTo(candidate)) continue;
+            if (requirePath && !npc.getNavigator().canNavigateTo(candidate)) continue;
             double candidateDistance = current.distanceSquared(candidate);
             if (candidateDistance < distance) {
                 best = candidate;
@@ -479,6 +622,13 @@ final class CivilProfessionRuntime {
                         miningBlock.getLocation(), progress, npc.getEntity()));
     }
 
-    private record MiningCandidate(Block block, MiningZone zone, double distanceSquared) {
+    record MiningCandidate(Block block, MiningZone zone, Location standing, double distanceSquared) {
+    }
+
+    record MiningSelection(
+            MiningCandidate selected, java.util.Set<MiningZone> routeFailures, int pathCandidateCount) {
+    }
+
+    private record CachedMiningBlocks(java.util.List<Block> blocks, long expiresTick) {
     }
 }

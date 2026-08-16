@@ -30,6 +30,7 @@ final class RancherRuntime {
     private UUID navigationTarget;
     private long navigationStartedTick;
     private String navigationFailure;
+    private GateRouteCoordinator gateRouteCoordinator;
     private List<Animals> feedingAnimals = List.of();
     private int feedingIndex;
     private String feedingFood;
@@ -159,6 +160,10 @@ final class RancherRuntime {
     }
 
     void releaseWorkState() {
+        if (gateRouteCoordinator != null) {
+            gateRouteCoordinator.cancel();
+            gateRouteCoordinator = null;
+        }
         releasePen();
         navigationTarget = null;
         feedingAnimals = List.of();
@@ -311,7 +316,7 @@ final class RancherRuntime {
         if (npc.getEntity().getLocation().distanceSquared(returnTarget) <= margin * margin) {
             returnTarget = safeRanchTarget(zone, serverTick + 1L, config);
         }
-        navigateTo(returnTarget, animal.getUniqueId(), serverTick, config, margin);
+        navigateTo(returnTarget, animal.getUniqueId(), serverTick, config, margin, "RANCH_RETURN_ESCAPED");
     }
 
     private void finishEscapedReturn(long serverTick, LivingNpcConfig config, boolean success) {
@@ -340,7 +345,9 @@ final class RancherRuntime {
             nextActionTick = serverTick + config.rancher().patrolIntervalTicks();
             return false;
         }
-        navigateTo(patrolTarget, npc.getUniqueId(), serverTick, config, config.navigationDistanceMargin());
+        navigateTo(
+                patrolTarget, npc.getUniqueId(), serverTick, config,
+                config.navigationDistanceMargin(), "RANCH_PATROL");
         nextActionTick = serverTick + config.rancher().patrolIntervalTicks();
         releasePen();
         return true;
@@ -350,12 +357,32 @@ final class RancherRuntime {
         Location current = npc.getEntity().getLocation();
         if (inside(current, zone, config.workZoneValidationRadius() - 1,
                 config.workZoneValidationVerticalRange())) {
+            if (gateRouteCoordinator != null) {
+                gateRouteCoordinator.cancel();
+                gateRouteCoordinator = null;
+            }
             workEntryTarget = null;
             return true;
         }
+        if (gateRouteCoordinator != null) {
+            GateRouteCoordinator.Result result = gateRouteCoordinator.tick(current, serverTick);
+            if (result == GateRouteCoordinator.Result.IN_PROGRESS) return false;
+            gateRouteCoordinator = null;
+            workEntryTarget = null;
+            if (result == GateRouteCoordinator.Result.COMPLETE
+                    && inside(current, zone, config.workZoneValidationRadius() - 1,
+                            config.workZoneValidationVerticalRange())) {
+                nextActionTick = serverTick;
+                return true;
+            }
+            navigationFailure = "Không thể đi qua cổng vào khu chăn nuôi";
+            releasePen();
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
         if (workEntryTarget != null) {
             double margin = config.navigationDistanceMargin();
-            if (current.distanceSquared(workEntryTarget) <= margin * margin) {
+            if (FarmerRuntime.navigationTargetReached(current, workEntryTarget, margin)) {
                 if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
                 workEntryTarget = null;
                 if (inside(current, zone, config.workZoneValidationRadius() - 1,
@@ -379,17 +406,81 @@ final class RancherRuntime {
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             return false;
         }
+        VillageDefinition configuredVillage = villages.get(definition.villageId());
+        List<StoredLocation> configuredGates = configuredVillage == null
+                ? List.of() : configuredVillage.navigationGates();
+        List<GateRoute.Candidate> gates = GateRouteDiscovery.discover(
+                current, target, configuredGates);
+        if (!gates.isEmpty()) {
+            net.citizensnpcs.api.ai.Navigator gateNavigator = npc.getNavigator();
+            LivingNavigation.allowDoors(gateNavigator.getLocalParameters())
+                    .speedModifier(config.navigationSpeedModifier())
+                    .distanceMargin(config.navigationDistanceMargin())
+                    .pathDistanceMargin(config.navigationDistanceMargin())
+                    .destinationTeleportMargin(0.0)
+                    .stuckAction((stuckNpc, stuckNavigator) -> false);
+            gateRouteCoordinator = new GateRouteCoordinator(new GateRouteCoordinator.Navigation() {
+                @Override
+                public boolean start(Location legTarget, double margin) {
+                    net.citizensnpcs.api.ai.NavigatorParameters parameters = gateNavigator.getLocalParameters();
+                    Location legStart = npc.getEntity().getLocation();
+                    if (!NavigationDiagnostics.shared().targetInRange(
+                            legStart, legTarget, parameters.range())) {
+                        NavigationDiagnostics.shared().targetOutOfRange(
+                                npc, parameters, "RANCH_ENTER_GATE", legTarget,
+                                margin, margin);
+                        return false;
+                    }
+                    net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
+                            .activeParametersAfterTarget(gateNavigator, legTarget, margin);
+                    NavigationDiagnostics.shared().attach(
+                            npc, activeParameters, "RANCH_ENTER_GATE", legTarget,
+                            margin, margin);
+                    return true;
+                }
+
+                @Override
+                public boolean navigating() {
+                    return gateNavigator.isNavigating();
+                }
+
+                @Override
+                public void cancel() {
+                    if (gateNavigator.isNavigating()) gateNavigator.cancelNavigation();
+                }
+            }, config.navigationTimeoutTicks(), config.navigationDistanceMargin(), 1.0);
+            workEntryTarget = target;
+            GateRouteCoordinator.Result result = gateRouteCoordinator.start(current, target, gates, serverTick);
+            if (result == GateRouteCoordinator.Result.IN_PROGRESS) {
+                navigationFailure = null;
+                return false;
+            }
+            gateRouteCoordinator = null;
+            workEntryTarget = null;
+        }
         net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
         LivingNavigation.allowDoors(navigator.getLocalParameters())
                 .speedModifier(config.navigationSpeedModifier())
                 .distanceMargin(config.navigationDistanceMargin())
+                .pathDistanceMargin(config.navigationDistanceMargin())
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        net.citizensnpcs.api.ai.NavigatorParameters parameters = navigator.getLocalParameters();
+        if (!startNavigation(
+                navigator, parameters, target, "RANCH_ENTER", serverTick,
+                config.navigationDistanceMargin(), config)) {
+            navigationFailure = "Mục tiêu vào chuồng vượt quá tầm Citizens";
+            releasePen();
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
         workEntryTarget = target;
-        navigationStartedTick = serverTick;
         navigationFailure = null;
         return false;
+    }
+
+    void observeGateOpened(String gateKey) {
+        if (gateRouteCoordinator != null) gateRouteCoordinator.gateOpenIntent(gateKey);
     }
 
     private Location safeRanchTarget(Location zone, long salt, LivingNpcConfig config) {
@@ -409,16 +500,39 @@ final class RancherRuntime {
     }
 
     private void navigateTo(
-            Location target, UUID targetUuid, long serverTick, LivingNpcConfig config, double margin) {
+            Location target, UUID targetUuid, long serverTick, LivingNpcConfig config,
+            double margin, String operation) {
         net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
         LivingNavigation.allowDoors(navigator.getLocalParameters())
                 .speedModifier(config.navigationSpeedModifier())
                 .distanceMargin(margin)
+                .pathDistanceMargin(margin)
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        net.citizensnpcs.api.ai.NavigatorParameters parameters = navigator.getLocalParameters();
+        if (!startNavigation(navigator, parameters, target, operation, serverTick, margin, config)) {
+            navigationFailure = "Mục tiêu Rancher vượt quá tầm Citizens";
+            navigationTarget = null;
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return;
+        }
         navigationTarget = targetUuid;
+    }
+
+    private boolean startNavigation(
+            net.citizensnpcs.api.ai.Navigator navigator,
+            net.citizensnpcs.api.ai.NavigatorParameters parameters,
+            Location target, String operation, long serverTick, double margin, LivingNpcConfig config) {
+        Location current = npc.getEntity().getLocation();
+        if (!NavigationDiagnostics.shared().targetInRange(current, target, parameters.range())) {
+            NavigationDiagnostics.shared().targetOutOfRange(npc, parameters, operation, target, margin, margin);
+            return false;
+        }
+        net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
+                .activeParametersAfterTarget(navigator, target, margin);
+        NavigationDiagnostics.shared().attach(npc, activeParameters, operation, target, margin, margin);
         navigationStartedTick = serverTick;
+        return true;
     }
 
     static double distanceOutsideSquared(Location location, Location center) {
@@ -529,9 +643,15 @@ final class RancherRuntime {
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             return false;
         }
-        navigator.setTarget(standing);
+        if (!startNavigation(
+                navigator, parameters, standing, "RANCH_APPROACH_ANIMAL", serverTick,
+                config.rancher().interactionRange(), config)) {
+            navigationTarget = null;
+            navigationFailure = "Vật nuôi vượt quá tầm Citizens";
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
         navigationTarget = targetUuid;
-        navigationStartedTick = serverTick;
         navigationFailure = null;
         return false;
     }
@@ -640,9 +760,16 @@ final class RancherRuntime {
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             return;
         }
-        navigator.setTarget(standing);
+        if (!startNavigation(
+                navigator, parameters, standing, "RANCH_FETCH_FOOD", serverTick,
+                config.rancher().interactionRange(), config)) {
+            navigationFailure = "Rương thức ăn vượt quá tầm Citizens";
+            failedDeliveryLocations.add(deliveryKey(foodChest));
+            foodChest = null;
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return;
+        }
         navigationTarget = npc.getUniqueId();
-        navigationStartedTick = serverTick;
     }
 
     private Location nearestReachableDeliveryChest(String villageId, LivingNpcConfig config) {
@@ -800,9 +927,15 @@ final class RancherRuntime {
             nextActionTick = serverTick + 1L;
             return true;
         }
-        navigator.setTarget(standing);
+        if (!startNavigation(
+                navigator, parameters, standing, "RANCH_DEPOSIT", serverTick, range, config)) {
+            navigationFailure = "Rương giao sản phẩm vượt quá tầm Citizens";
+            failedDeliveryLocations.add(deliveryKey(chest));
+            carriedDeliveryChest = null;
+            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            return true;
+        }
         navigationTarget = npc.getUniqueId();
-        navigationStartedTick = serverTick;
         setHand(null);
         return true;
     }

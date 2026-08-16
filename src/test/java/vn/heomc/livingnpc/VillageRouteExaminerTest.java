@@ -26,6 +26,7 @@ class VillageRouteExaminerTest {
         assertTrue(examiner.getCost(road, point) < examiner.getCost(grass, point));
     }
 
+
     @Test
     void stronglyPenalizesRoutesBesideWater() {
         BlockSource safe = flatSource(Material.DIRT_PATH);
@@ -50,7 +51,7 @@ class VillageRouteExaminerTest {
     void identifiesUnsupportedEdgeNodesForNeighbourFiltering() {
         BlockSource safe = flatSource(Material.DIRT_PATH);
         BlockSource edge = flatSource(Material.DIRT_PATH);
-        when(edge.getMaterialAt(1, 0, 0)).thenReturn(Material.AIR);
+        when(edge.getMaterialAt(0, 0, 0)).thenReturn(Material.AIR);
 
         assertFalse(VillageRouteExaminer.isUnsupportedEdge(safe, pointAt(0, 1, 0)));
         assertTrue(VillageRouteExaminer.isUnsupportedEdge(edge, pointAt(0, 1, 0)));
@@ -61,13 +62,26 @@ class VillageRouteExaminerTest {
         BlockSource source = flatSource(Material.DIRT_PATH);
         PathPoint safe = pointAt(0, 1, 0);
         PathPoint edge = pointAt(2, 1, 0);
-        when(source.getMaterialAt(3, 0, 0)).thenReturn(Material.AIR);
+        when(source.getMaterialAt(2, 0, 0)).thenReturn(Material.AIR);
         VectorNode current = mock(VectorNode.class);
         when(current.getNeighbours(source, current, true)).thenReturn(java.util.List.of(safe, edge));
 
         java.util.List<PathPoint> filtered = examiner.getNeighbours(source, current);
 
         assertEquals(java.util.List.of(safe), filtered);
+    }
+
+    @Test
+    void keepsSupportedCorridorNodesBesideAnUnsupportedEdge() {
+        BlockSource source = flatSource(Material.DIRT_PATH);
+        PathPoint corridor = pointAt(2, 1, 0);
+        when(source.getMaterialAt(3, 0, 0)).thenReturn(Material.AIR);
+        VectorNode current = mock(VectorNode.class);
+        when(current.getNeighbours(source, current, true)).thenReturn(java.util.List.of(corridor));
+
+        java.util.List<PathPoint> filtered = examiner.getNeighbours(source, current);
+
+        assertEquals(java.util.List.of(corridor), filtered);
     }
 
     private BlockSource flatSource(Material support) {

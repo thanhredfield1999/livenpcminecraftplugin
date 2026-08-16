@@ -6,6 +6,8 @@ param(
     [string]$JavaCommand = "java",
     [string[]]$JavaArguments = @("-Xms2G", "-Xmx4G", "-jar", "paper.jar", "nogui"),
     [string[]]$RequiredRoles = @("fisher", "rancher"),
+    [int]$ShutdownTimeoutSeconds = 120,
+    [switch]$NoAutoStop,
     [switch]$CheckOnly
 )
 
@@ -15,13 +17,23 @@ $pluginsDirectory = Join-Path $ServerDirectory "plugins"
 $pluginDataDirectory = Join-Path $pluginsDirectory "LivingNPC"
 $logPath = Join-Path $ServerDirectory "logs\latest.log"
 $paperJar = Join-Path $ServerDirectory "paper.jar"
+$serverPropertiesPath = Join-Path $ServerDirectory "server.properties"
+$script:launchedProcessId = $null
 
 function Get-ServerProcess {
-    Get-CimInstance Win32_Process -Filter "Name = 'java.exe'" | Where-Object {
-        $_.CommandLine -and (
-            $_.CommandLine.IndexOf($ServerDirectory, [System.StringComparison]::OrdinalIgnoreCase) -ge 0 -or
-            $_.CommandLine -match "(?i)(?:^|[\\/\s])paper\.jar(?:\s|$)"
-        )
+    if ($script:launchedProcessId) {
+        return Get-CimInstance Win32_Process -Filter "ProcessId = $script:launchedProcessId" -ErrorAction SilentlyContinue
+    }
+    if (-not (Test-Path -LiteralPath $serverPropertiesPath -PathType Leaf)) { return }
+    $portLines = @([IO.File]::ReadAllLines($serverPropertiesPath) | Where-Object { $_ -match '^server-port=(\d+)$' })
+    if ($portLines.Count -ne 1) { return }
+    $serverPort = [int]($portLines[0] -replace '^server-port=', '')
+    $processIds = @(Get-NetTCPConnection -State Listen -LocalPort $serverPort -ErrorAction SilentlyContinue |
+        Select-Object -ExpandProperty OwningProcess -Unique)
+    foreach ($processId in $processIds) {
+        Get-CimInstance Win32_Process -Filter "ProcessId = $processId" -ErrorAction SilentlyContinue | Where-Object {
+            $_.Name -eq 'java.exe' -and $_.CommandLine -match "(?i)(?:^|[\\/\s])paper\.jar(?:\s|$)"
+        }
     }
 }
 
@@ -64,6 +76,33 @@ function Read-LatestLogFrom([long]$offset) {
     finally { $stream.Dispose() }
 }
 
+function Stop-PaperCleanly {
+    $processes = @(Get-ServerProcess)
+    if ($processes.Count -eq 0) { return }
+    if ($NoAutoStop) {
+        throw "Paper is already running from $ServerDirectory and automatic shutdown was disabled."
+    }
+
+    Write-Host "[0/5] Stopping Paper cleanly through local RCON..."
+    $shutdownLogOffset = Get-LatestLogLength
+    & (Join-Path $PSScriptRoot "paper-rcon.ps1") stop -ServerDirectory $ServerDirectory
+
+    $deadline = (Get-Date).AddSeconds($ShutdownTimeoutSeconds)
+    while ((Get-Date) -lt $deadline) {
+        Start-Sleep -Seconds 2
+        $remaining = @($processes | Where-Object { Get-Process -Id $_.ProcessId -ErrorAction SilentlyContinue })
+        if ($remaining.Count -eq 0) {
+            $shutdownLog = Read-LatestLogFrom $shutdownLogOffset
+            if ($shutdownLog -notmatch "Stopping server") {
+                throw "Paper exited, but the clean shutdown marker was not found in $logPath"
+            }
+            Write-Host "      Paper stopped after saving plugin and world data."
+            return
+        }
+    }
+    throw "Paper did not stop within $ShutdownTimeoutSeconds seconds. It was not forcibly terminated."
+}
+
 if (-not (Test-Path -LiteralPath $ServerDirectory -PathType Container)) {
     throw "Server directory does not exist: $ServerDirectory"
 }
@@ -80,12 +119,10 @@ if ($CheckOnly) {
     if ($log -notmatch "Done \([0-9.]+s\)!") { throw "The current Paper log has no Done marker: $logPath" }
     $observationLogOffset = Get-LatestLogLength
 } else {
-    if (Get-ServerProcess) {
-        throw "Paper is already running from $ServerDirectory. Stop it cleanly before deploying a new jar."
-    }
+    Stop-PaperCleanly
 
     Write-Host "[1/5] Building and testing LivingNPC..."
-    & (Join-Path $projectDirectory "gradlew.bat") clean test build --console=plain
+    & (Join-Path $projectDirectory "gradlew.bat") -p $projectDirectory clean test build --console=plain
     if ($LASTEXITCODE -ne 0) { throw "Gradle build failed with exit code $LASTEXITCODE." }
     $builtJars = @(Get-ChildItem -LiteralPath (Join-Path $projectDirectory "build\libs") -Filter "living-npc-*.jar" -File)
     if ($builtJars.Count -ne 1) {
@@ -118,7 +155,8 @@ if ($CheckOnly) {
     $observationLogOffset = Get-LatestLogLength
     $launchTime = Get-Date
     Write-Host "[4/5] Starting Paper. The server will remain running after this check."
-    Start-Process -FilePath $JavaCommand -ArgumentList $JavaArguments -WorkingDirectory $ServerDirectory | Out-Null
+    $launchedProcess = Start-Process -FilePath $JavaCommand -ArgumentList $JavaArguments -WorkingDirectory $ServerDirectory -PassThru
+    $script:launchedProcessId = $launchedProcess.Id
 
     $startupDeadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
     $started = $false

@@ -29,14 +29,17 @@ final class NpcEconomy {
     }
 
     boolean addProduction(UUID npcUuid, String itemKey, int amount, long shiftKey) {
+        if (!store.writable()) return false;
         return addProduction(npcUuid, null, itemKey, amount, shiftKey);
     }
 
     boolean addProduction(UUID npcUuid, String villageId, String itemKey, int amount, long shiftKey) {
+        if (!store.writable()) return false;
         return addProduction(npcUuid, villageId, itemKey, amount, shiftKey, true);
     }
 
     boolean addByproduct(UUID npcUuid, String villageId, String itemKey, int amount, long shiftKey) {
+        if (!store.writable()) return false;
         return addProduction(npcUuid, villageId, itemKey, amount, shiftKey, false);
     }
 
@@ -72,6 +75,7 @@ final class NpcEconomy {
     }
 
     boolean canAcceptProduction(UUID npcUuid, String villageId, int amount, long shiftKey) {
+        if (!store.writable()) return false;
         if (amount <= 0) {
             return false;
         }
@@ -83,6 +87,7 @@ final class NpcEconomy {
     }
 
     boolean canAcceptHarvest(UUID npcUuid, String villageId, int output, int byproduct, long shiftKey) {
+        if (!store.writable()) return false;
         if (output <= 0 || byproduct < 0) return false;
         NpcAccount account = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
@@ -94,7 +99,7 @@ final class NpcEconomy {
     boolean addRoleProduction(
             UUID npcUuid, String villageId, ResidentRole role, String itemKey,
             int amount, int roleLimit, long shiftKey) {
-        if (role == null || amount <= 0 || roleLimit <= 0) return false;
+        if (!store.writable() || role == null || amount <= 0 || roleLimit <= 0) return false;
         NpcAccount account = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
         resetShiftIfNeeded(account, shiftKey);
@@ -110,6 +115,27 @@ final class NpcEconomy {
         return true;
     }
 
+    boolean commitRoleProduction(
+            UUID npcUuid, String villageId, ResidentRole role, String itemKey,
+            int amount, int roleLimit, long shiftKey) {
+        if (!store.writable()) return false;
+        NpcAccount worker = store.account(npcUuid);
+        NpcAccount town = villageAccount(villageId);
+        NpcAccount previousWorker = worker.copy();
+        NpcAccount previousTown = town.copy();
+        if (!addRoleProduction(npcUuid, villageId, role, itemKey, amount, roleLimit, shiftKey)) return false;
+        if (store.save()) {
+            dirty = false;
+            return true;
+        }
+        store.restore(previousWorker);
+        store.restore(previousTown);
+        dirty = true;
+        logger.severe("MINER_ECONOMY_COMMIT_FAILED npc=" + npcUuid + " village=" + villageId
+                + " item=" + itemKey + " amount=" + amount + " result=ROLLED_BACK");
+        return false;
+    }
+
     boolean transformVillageItems(
             UUID npcUuid, String villageId, ResidentRole role,
             Map<String, Integer> inputs, String output, int outputAmount, int roleLimit, long shiftKey) {
@@ -120,7 +146,7 @@ final class NpcEconomy {
     boolean transformVillageItems(
             UUID npcUuid, String villageId, ResidentRole role, Map<String, Integer> inputs,
             String output, int outputAmount, int stockTarget, int roleLimit, long shiftKey) {
-        if (role == null || inputs == null || output == null || output.isBlank()
+        if (!store.writable() || role == null || inputs == null || output == null || output.isBlank()
                 || outputAmount <= 0 || stockTarget <= 0 || roleLimit <= 0) return false;
         NpcAccount worker = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
@@ -146,7 +172,7 @@ final class NpcEconomy {
 
     boolean canAcceptRoleProduction(
             UUID npcUuid, String villageId, ResidentRole role, int amount, int roleLimit, long shiftKey) {
-        if (role == null || amount <= 0 || roleLimit <= 0) return false;
+        if (!store.writable() || role == null || amount <= 0 || roleLimit <= 0) return false;
         NpcAccount account = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
         resetShiftIfNeeded(account, shiftKey);
@@ -160,6 +186,7 @@ final class NpcEconomy {
     }
 
     SaleResult sellAtShiftEnd(UUID npcUuid, String villageId, long completedShiftKey) {
+        if (!store.writable()) return SaleResult.EMPTY;
         NpcAccount account = villageAccount(villageId);
         if (account.lastSaleShift() == completedShiftKey || account.inventorySize() == 0) {
             return SaleResult.EMPTY;
@@ -212,7 +239,7 @@ final class NpcEconomy {
     }
 
     void creditVillage(String villageId, long amountMinor) {
-        if (amountMinor <= 0L) return;
+        if (!store.writable() || amountMinor <= 0L) return;
         NpcAccount account = villageAccount(villageId);
         account.setBalanceMinor(Math.addExact(account.balanceMinor(), amountMinor));
         dirty = true;
@@ -221,6 +248,7 @@ final class NpcEconomy {
     VisitorDemandSnapshot snapshotVisitorDemand(
             String villageId, String visitId, long walletMinor, int maxItems) {
         java.util.LinkedHashMap<String, Integer> demand = new java.util.LinkedHashMap<>();
+        if (!store.writable()) return new VisitorDemandSnapshot(visitId, walletMinor, demand);
         if (visitId == null || visitId.isBlank() || walletMinor <= 0L || maxItems <= 0) {
             return new VisitorDemandSnapshot(visitId, walletMinor, demand);
         }
@@ -244,7 +272,7 @@ final class NpcEconomy {
     }
 
     VisitorPurchaseResult visitorPurchase(String villageId, VisitorDemandSnapshot snapshot) {
-        if (snapshot == null || snapshot.walletMinor() <= 0L || snapshot.empty()
+        if (!store.writable() || snapshot == null || snapshot.walletMinor() <= 0L || snapshot.empty()
                 || store.hasTransaction(snapshot.visitId())) {
             return VisitorPurchaseResult.empty(snapshot == null ? 0L : snapshot.walletMinor());
         }
@@ -286,7 +314,7 @@ final class NpcEconomy {
     }
 
     boolean consumeVillageItem(String villageId, String itemKey, int amount) {
-        if (itemKey == null || itemKey.isBlank() || amount <= 0) return false;
+        if (!store.writable() || itemKey == null || itemKey.isBlank() || amount <= 0) return false;
         NpcAccount account = villageAccount(villageId);
         if (account.quantity(itemKey) < amount) return false;
         account.setQuantity(itemKey, account.quantity(itemKey) - amount);
@@ -295,10 +323,11 @@ final class NpcEconomy {
     }
 
     boolean canStoreVillageItems(String villageId, int amount) {
-        return amount >= 0 && hasStorageFor(villageAccount(villageId), amount);
+        return store.writable() && amount >= 0 && hasStorageFor(villageAccount(villageId), amount);
     }
 
     boolean addVillageLoot(String villageId, Map<String, Integer> loot) {
+        if (!store.writable()) return false;
         int total = loot.values().stream().filter(amount -> amount > 0).mapToInt(Integer::intValue).sum();
         if (total <= 0 || !canStoreVillageItems(villageId, total)) return false;
         NpcAccount account = villageAccount(villageId);
@@ -312,7 +341,7 @@ final class NpcEconomy {
     }
 
     boolean addCarriedLoot(UUID npcUuid, Map<String, Integer> loot) {
-        if (npcUuid == null || loot == null || loot.isEmpty()) return false;
+        if (!store.writable() || npcUuid == null || loot == null || loot.isEmpty()) return false;
         NpcAccount carried = account(npcUuid);
         Map<String, Integer> updated = new java.util.LinkedHashMap<>(carried.inventory());
         for (Map.Entry<String, Integer> item : loot.entrySet()) {
@@ -332,6 +361,7 @@ final class NpcEconomy {
     }
 
     boolean depositCarriedLoot(UUID npcUuid, String villageId) {
+        if (!store.writable()) return false;
         NpcAccount carried = account(npcUuid);
         Map<String, Integer> items = carried.inventory();
         if (items.isEmpty()) return true;
@@ -355,6 +385,7 @@ final class NpcEconomy {
     }
 
     void recordActivity(UUID npcUuid, String villageId, ResidentRole role, String action, String itemKey, int amount) {
+        if (!store.writable()) return;
         store.recordActivity(new NpcActivity(npcUuid, villageId, role, action, itemKey, amount, Instant.now()));
         dirty = true;
         if (ReleasePolicy.roleEnabled(role)) {
@@ -382,7 +413,7 @@ final class NpcEconomy {
     }
 
     boolean remove(UUID npcUuid) {
-        return store.remove(npcUuid);
+        return store.writable() && store.remove(npcUuid);
     }
 
     void setConfig(LivingNpcConfig config) {

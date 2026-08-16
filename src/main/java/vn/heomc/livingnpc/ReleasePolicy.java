@@ -20,7 +20,9 @@ final class ReleasePolicy {
     }
 
     static boolean workZoneEnabled(VillageWorkZoneType type) {
-        return type == VillageWorkZoneType.FISHING || type == VillageWorkZoneType.RANCH;
+        return type == VillageWorkZoneType.FISHING
+                || type == VillageWorkZoneType.RANCH
+                || type == VillageWorkZoneType.MINING;
     }
 
     static boolean seasonTwoRuntimesEnabled() {

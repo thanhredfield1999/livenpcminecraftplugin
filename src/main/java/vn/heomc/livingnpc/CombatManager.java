@@ -131,6 +131,10 @@ final class CombatManager implements Listener {
         farmers.setExternallyBusy(busy);
         for (CombatArena arena : java.util.List.copyOf(arenas.values())) {
             if (!arena.active()) continue;
+            if (isBedtimeFor(arena)) {
+                finish(arena);
+                continue;
+            }
             NPC archer = npc(arena.archerUuid());
             NPC swordsman = npc(arena.swordsmanUuid());
             if (retreating.contains(arena.id())) {
@@ -354,5 +358,12 @@ final class CombatManager implements Listener {
             }
         }
         return busy;
+    }
+
+    static boolean isBedtimeFor(CombatArena arena) {
+        StoredLocation first = arena.firstCorner();
+        if (first == null) return false;
+        Location location = first.resolve();
+        return location != null && FarmerRuntime.isBedtime(location.getWorld().getTime());
     }
 }

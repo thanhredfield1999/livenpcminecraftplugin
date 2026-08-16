@@ -18,8 +18,14 @@ final class NavigationLeaseManager {
         Lease current = leases.get(npcUuid);
         if (current != null && current.owner().equals(owner)) return true;
         if (current != null && current.priority() >= priority) return false;
-        if (current != null) current.onPreempt().run();
         leases.put(npcUuid, new Lease(owner, priority, onPreempt));
+        if (current != null) {
+            try {
+                current.onPreempt().run();
+            } catch (RuntimeException ignored) {
+                // Owner mới đã thắng arbitration; callback cũ không được rollback lease.
+            }
+        }
         return true;
     }
 

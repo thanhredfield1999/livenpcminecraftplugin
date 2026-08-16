@@ -25,6 +25,7 @@ public final class LivingNpcPlugin extends JavaPlugin {
     private MiningRestorationStore miningRestorations;
     private CookingSessionStore cookingSessions;
     private DoubleDoorListener doorListener;
+    private RuntimeStopCoordinator runtimeStopCoordinator;
     private BukkitTask tickTask;
     private long serverTick;
     private long nextEconomyFlushTick = 1200L;
@@ -36,6 +37,7 @@ public final class LivingNpcPlugin extends JavaPlugin {
         if (!new java.io.File(getDataFolder(), "prices.yml").exists()) saveResource("prices.yml", false);
         if (!new java.io.File(getDataFolder(), "recipes.yml").exists()) saveResource("recipes.yml", false);
         config = LivingNpcConfig.load(getConfig());
+        NavigationDiagnostics.initialize(getLogger());
         geminiSettings = GeminiSettings.load(getConfig());
         profiles = new ProfileRegistry(getDataFolder());
         economy = new NpcEconomy(
@@ -69,9 +71,21 @@ public final class LivingNpcPlugin extends JavaPlugin {
         getServer().getPluginManager().registerEvents(new LinkedBlockListener(this), this);
         doorListener = new DoubleDoorListener(this);
         getServer().getPluginManager().registerEvents(doorListener, this);
+        getServer().getPluginManager().registerEvents(new GateRouteListener(this), this);
         if (ReleasePolicy.seasonNineRuntimesEnabled()) {
             getServer().getPluginManager().registerEvents(new CookingApplianceLockListener(cookingSessions), this);
         }
+        runtimeStopCoordinator = new RuntimeStopCoordinator(getLogger(), java.util.List.of(
+                new RuntimeStopCoordinator.Cleanup("door-examiner", LivingDoorExaminer::shutdown),
+                new RuntimeStopCoordinator.Cleanup("doors", doorListener::shutdown),
+                new RuntimeStopCoordinator.Cleanup("visitors", visitorManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("ranchers", rancherManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("fishers", fisherManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("civil-professions", civilProfessionManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("merchants", merchantManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("residents", manager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("needs", needsManager::shutdown),
+                new RuntimeStopCoordinator.Cleanup("economy", economy::flush)));
 
         LivingNpcCommand commandHandler = new LivingNpcCommand(this);
         PluginCommand command = Objects.requireNonNull(getCommand("livingnpc"));
@@ -87,36 +101,8 @@ public final class LivingNpcPlugin extends JavaPlugin {
 
     @Override
     public void onDisable() {
-        if (tickTask != null) {
-            tickTask.cancel();
-        }
-        if (manager != null) {
-            manager.shutdown();
-        }
-        if (visitorManager != null) {
-            visitorManager.shutdown();
-        }
-        if (rancherManager != null) {
-            rancherManager.shutdown();
-        }
-        if (fisherManager != null) {
-            fisherManager.shutdown();
-        }
-        if (civilProfessionManager != null) {
-            civilProfessionManager.shutdown();
-        }
-        if (merchantManager != null) {
-            merchantManager.shutdown();
-        }
-        if (doorListener != null) {
-            doorListener.shutdown();
-        }
-        if (needsManager != null) {
-            needsManager.shutdown();
-        }
-        if (economy != null) {
-            economy.flush();
-        }
+        cancelTickTask();
+        if (runtimeStopCoordinator != null) runtimeStopCoordinator.stop();
     }
 
     FarmerManager manager() {
@@ -194,19 +180,19 @@ public final class LivingNpcPlugin extends JavaPlugin {
     }
 
     private void startTickTask() {
-        if (tickTask != null) {
-            tickTask.cancel();
-            tickTask = null;
-        }
+        cancelTickTask();
         if (!getConfig().getBoolean("runtime.enabled", true)) {
+            runtimeStopCoordinator.stop();
             getLogger().warning("LivingNPC runtime is disabled; NPC data and admin commands remain available.");
             return;
         }
+        runtimeStopCoordinator.start();
         tickTask = getServer().getScheduler().runTaskTimer(
                 this,
                 () -> {
                     serverTick += config.tickInterval();
                     runTickStep("residents", () -> manager.tick(serverTick));
+                    runTickStep("door-recovery", doorListener::recoverObstructedManagedNpcs);
                     runTickStep("needs", () -> needsManager.tick(serverTick, config.needs()));
                     if (ReleasePolicy.seasonTwoRuntimesEnabled()) {
                         runTickStep("ranchers", () -> rancherManager.tick(serverTick, config));
@@ -228,6 +214,12 @@ public final class LivingNpcPlugin extends JavaPlugin {
                 },
                 config.tickInterval(),
                 config.tickInterval());
+    }
+
+    private void cancelTickTask() {
+        if (tickTask == null) return;
+        tickTask.cancel();
+        tickTask = null;
     }
 
     private void runTickStep(String step, Runnable action) {

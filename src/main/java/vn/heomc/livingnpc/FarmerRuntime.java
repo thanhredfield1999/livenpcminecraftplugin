@@ -3,6 +3,7 @@ package vn.heomc.livingnpc;
 import java.util.Collection;
 import java.util.Comparator;
 import java.util.Deque;
+import java.util.List;
 import java.util.UUID;
 import java.util.concurrent.ThreadLocalRandom;
 import net.citizensnpcs.api.ai.Navigator;
@@ -19,9 +20,10 @@ import org.bukkit.block.data.Ageable;
 import org.bukkit.block.data.type.Bed;
 import org.bukkit.entity.HumanEntity;
 import org.bukkit.entity.Monster;
-import org.bukkit.entity.Zombie;
-import org.bukkit.entity.Player;
 import org.bukkit.entity.LivingEntity;
+import org.bukkit.entity.Player;
+import org.bukkit.entity.Villager;
+import org.bukkit.entity.Zombie;
 import org.bukkit.inventory.ItemStack;
 
 final class FarmerRuntime {
@@ -51,6 +53,7 @@ final class FarmerRuntime {
     private boolean scanStaggerInitialized;
     private long nextAmbientTick;
     private Location navigationTarget;
+    private Location navigationStage;
     private boolean inspecting;
     private int pendingDelivery;
     private Deque<Location> deliveryCandidates;
@@ -63,7 +66,6 @@ final class FarmerRuntime {
     private Location sleepingBed;
     private boolean sleepActive;
     private String sleepDebug = "NOT_CHECKED";
-    private long bedNavigationFailedNight = Long.MIN_VALUE;
     private SeatType seatingType;
     private FarmerPhase seatResumePhase;
     private long seatEndTick;
@@ -73,6 +75,7 @@ final class FarmerRuntime {
     private boolean morningExitRequired;
     private long morningExitActiveTicks;
     private String navigationLeaseOwner;
+    private GateRouteCoordinator gateRouteCoordinator;
 
     FarmerRuntime(
             NPC npc,
@@ -129,14 +132,8 @@ final class FarmerRuntime {
             return false;
         }
         long time = human.getWorld().getTime();
-        long currentSleepNight = Math.floorDiv(human.getWorld().getFullTime(), 24_000L);
-        ResidentSchedule activeSchedule = definition.schedule(
-                definition.activeRole(), new ResidentSchedule(config.workStartTick(), config.workEndTick()));
-        boolean activeShift = definition.activeRole() != ResidentRole.RESIDENT
-                && definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
-                && SchedulePolicy.isScheduledTime(time, activeSchedule);
-        if (!isBedtime(time) || activeShift) {
-            sleepDebug = activeShift ? "ACTIVE_SHIFT" : "NOT_BEDTIME";
+        if (!isBedtime(time)) {
+            sleepDebug = "NOT_BEDTIME";
             boolean wakingUp = sleepActive || human.isSleeping()
                     || phase == FarmerPhase.GOING_TO_BED || phase == FarmerPhase.SLEEPING;
             if (human.isSleeping()) human.wakeup(false);
@@ -177,15 +174,12 @@ final class FarmerRuntime {
             }
             if (result == NavigationResult.ARRIVED && sleep(human)) return true;
             sleepDebug = result == NavigationResult.ARRIVED ? "SLEEP_REJECTED" : "BED_NAVIGATION_FAILED";
-            if (result == NavigationResult.FAILED) bedNavigationFailedNight = currentSleepNight;
             phase = FarmerPhase.INACTIVE;
             sleepingBed = null;
-        }
-        if (bedNavigationFailedNight == currentSleepNight) {
-            sleepDebug = "BED_NAVIGATION_FAILED";
-            return true;
+            if (result == NavigationResult.FAILED) return true;
         }
         if (serverTick < nextNavigationAttemptTick) {
+            sleepDebug = "RETRY_COOLDOWN";
             return true;
         }
         Location home = definition.home().resolve();
@@ -197,9 +191,10 @@ final class FarmerRuntime {
             sleepDebug = "HOME_DIFFERENT_WORLD";
             return true;
         }
-        sleepingBed = findBed(home);
+        BedLookup bedLookup = findBed(home);
+        sleepingBed = bedLookup.location();
         if (sleepingBed == null) {
-            sleepDebug = "BED_NOT_FOUND_OR_OCCUPIED";
+            sleepDebug = bedLookup.debug();
             restAtHome(serverTick, config, home);
             return true;
         }
@@ -217,8 +212,8 @@ final class FarmerRuntime {
                 restAtHome(serverTick, config, home);
             }
         } else {
-            navigate(standing, FarmerPhase.GOING_TO_BED, serverTick, config);
-            sleepDebug = "GOING_TO_BED";
+            sleepDebug = navigate(standing, FarmerPhase.GOING_TO_BED, serverTick, config)
+                    ? "GOING_TO_BED" : "RETRY_COOLDOWN";
         }
         return true;
     }
@@ -265,6 +260,7 @@ final class FarmerRuntime {
                 || phase == FarmerPhase.SHOPPING || phase == FarmerPhase.SOCIALIZING) {
             if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
             navigationTarget = null;
+            navigationStage = null;
             phase = FarmerPhase.INACTIVE;
         }
         clearSocial();
@@ -340,6 +336,7 @@ final class FarmerRuntime {
                 npc.getNavigator().cancelNavigation();
             }
             navigationTarget = null;
+            navigationStage = null;
             phase = FarmerPhase.INACTIVE;
         }
         boolean workTime = definition.plot() != null
@@ -402,6 +399,16 @@ final class FarmerRuntime {
             return;
         }
         if (phase == FarmerPhase.FINDING_WORK) {
+            if (requiresPlotEntry(npcLocation, plot, definition.plotRadius())) {
+                if (serverTick < nextNavigationAttemptTick) return;
+                Location plotEntry = findPlotEntry(plot, npcLocation, definition.plotRadius());
+                if (plotEntry != null) {
+                    navigate(plotEntry, FarmerPhase.GOING_TO_PLOT, serverTick, config);
+                } else {
+                    nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
+                }
+                return;
+            }
             findWork(serverTick, config, plot, nearbyPlayers);
             return;
         }
@@ -467,6 +474,7 @@ final class FarmerRuntime {
         if (npc.getEntity().getLocation().distanceSquared(target) <= margin * margin) {
             if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
             navigationTarget = null;
+            navigationStage = null;
             phase = FarmerPhase.RESTING;
             return;
         }
@@ -545,6 +553,7 @@ final class FarmerRuntime {
                 npc.getNavigator().cancelNavigation();
             }
             navigationTarget = null;
+            navigationStage = null;
             deliveryCandidates = null;
             activeDeliveryChest = null;
             clearSocial();
@@ -564,6 +573,7 @@ final class FarmerRuntime {
         if (npc.getNavigator().isNavigating()) {
             npc.getNavigator().cancelNavigation();
             navigationTarget = null;
+            navigationStage = null;
         }
         if (serverTick >= nextAmbientTick) {
             startLunchAmbient(serverTick, config, nearbyPlayers);
@@ -958,12 +968,36 @@ final class FarmerRuntime {
                 || phase == FarmerPhase.WATCHING_PLAYER;
     }
 
-    private Location findBed(Location home) {
-        if (!(home.getBlock().getBlockData() instanceof Bed bed)) return null;
+    private BedLookup findBed(Location home) {
+        if (!(home.getBlock().getBlockData() instanceof Bed bed)) {
+            return new BedLookup(null, "BED_BLOCK_MISSING");
+        }
         Block block = home.getBlock();
         if (bed.getPart() == Bed.Part.FOOT) block = block.getRelative(bed.getFacing());
-        if (!(block.getBlockData() instanceof Bed assigned) || assigned.isOccupied()) return null;
-        return block.getLocation();
+        if (!(block.getBlockData() instanceof Bed assigned)) {
+            return new BedLookup(null, "BED_CANONICAL_HALF_INVALID");
+        }
+        if (assigned.isOccupied() && !clearStaleBedOccupancy(block, assigned)) {
+            return new BedLookup(null, "BED_OCCUPIED");
+        }
+        return new BedLookup(block.getLocation(), "BED_READY");
+    }
+
+    private boolean clearStaleBedOccupancy(Block head, Bed headData) {
+        Location center = head.getLocation().add(0.5, 0.5, 0.5);
+        boolean sleeperNearby = head.getWorld().getNearbyEntities(center, 2.0, 2.0, 2.0).stream()
+                .anyMatch(entity -> entity instanceof HumanEntity human && human.isSleeping()
+                        || entity instanceof Villager villager && villager.isSleeping());
+        if (sleeperNearby) return false;
+
+        headData.setOccupied(false);
+        head.setBlockData(headData, false);
+        Block foot = head.getRelative(headData.getFacing().getOppositeFace());
+        if (foot.getBlockData() instanceof Bed footData) {
+            footData.setOccupied(false);
+            foot.setBlockData(footData, false);
+        }
+        return true;
     }
 
     private Location homeTarget() {
@@ -1000,6 +1034,7 @@ final class FarmerRuntime {
         if (!human.sleep(sleepingBed, true)) return false;
         if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
         navigationTarget = null;
+        navigationStage = null;
         phase = FarmerPhase.SLEEPING;
         sleepDebug = "SLEEPING";
         return true;
@@ -1266,6 +1301,17 @@ final class FarmerRuntime {
                 .orElse(null);
     }
 
+    static boolean requiresPlotEntry(Location current, Location plot, int radius) {
+        if (current == null || plot == null || current.getWorld() == null
+                || !current.getWorld().equals(plot.getWorld())) {
+            return true;
+        }
+        int boundedRadius = Math.max(1, radius);
+        return Math.abs(current.getBlockX() - plot.getBlockX()) > boundedRadius
+                || Math.abs(current.getBlockZ() - plot.getBlockZ()) > boundedRadius
+                || Math.abs(current.getBlockY() - plot.getBlockY()) > 2;
+    }
+
     private Location findPlotEntry(Location plot, Location current, int radius) {
         int boundedRadius = Math.max(1, radius);
         for (int candidateRadius : new int[] {Math.max(0, boundedRadius - 1), boundedRadius, boundedRadius + 1}) {
@@ -1481,23 +1527,109 @@ final class FarmerRuntime {
                 .pathDistanceMargin(config.navigationDistanceMargin())
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        String operation = targetPhase.name();
+        Location current = npc.getEntity().getLocation();
+        VillageDefinition village = villageStore.get(definition.villageId());
+        List<StoredLocation> configuredGates = village == null
+                ? List.of() : village.navigationGates();
+        List<GateRoute.Candidate> gates = GateRouteDiscovery.discover(
+                current, target, configuredGates);
+        if (!gates.isEmpty()) {
+            if (startGateRoute(navigator, target, gates, operation, serverTick, config)) {
+                navigationTarget = target.clone();
+                navigationStartedTick = serverTick;
+                phase = targetPhase;
+                return true;
+            }
+            releaseNavigationLease();
+            nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
+        if (!NavigationDiagnostics.shared().targetInRange(current, target, parameters.range())) {
+            NavigationDiagnostics.shared().targetOutOfRange(
+                    npc, parameters, operation, target,
+                    config.navigationDistanceMargin(), config.navigationDistanceMargin());
+            releaseNavigationLease();
+            nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
+        NavigatorParameters activeParameters = NavigationDiagnostics.shared()
+                .activeParametersAfterTarget(navigator, target, config.navigationDistanceMargin());
+        NavigationDiagnostics.shared().attach(
+                npc, activeParameters, operation, target,
+                config.navigationDistanceMargin(), config.navigationDistanceMargin());
         navigationTarget = target.clone();
         navigationStartedTick = serverTick;
         phase = targetPhase;
         return true;
     }
 
+    private boolean startGateRoute(
+            Navigator navigator, Location target, List<GateRoute.Candidate> gates,
+            String operation, long serverTick, LivingNpcConfig config) {
+        gateRouteCoordinator = new GateRouteCoordinator(
+                new GateRouteCoordinator.Navigation() {
+                    @Override
+                    public boolean start(Location legTarget, double margin) {
+                        NavigatorParameters parameters = navigator.getLocalParameters();
+                        Location current = npc.getEntity().getLocation();
+                        if (!NavigationDiagnostics.shared().targetInRange(current, legTarget, parameters.range())) {
+                            NavigationDiagnostics.shared().targetOutOfRange(
+                                    npc, parameters, operation + "_GATE", legTarget,
+                                    margin, margin);
+                            return false;
+                        }
+                        NavigatorParameters activeParameters = NavigationDiagnostics.shared()
+                                .activeParametersAfterTarget(navigator, legTarget, margin);
+                        NavigationDiagnostics.shared().attach(
+                                npc, activeParameters, operation + "_GATE", legTarget,
+                                margin, margin);
+                        return true;
+                    }
+
+                    @Override
+                    public boolean navigating() {
+                        return navigator.isNavigating();
+                    }
+
+                    @Override
+                    public void cancel() {
+                        if (navigator.isNavigating()) navigator.cancelNavigation();
+                    }
+                },
+                config.navigationTimeoutTicks(), config.navigationDistanceMargin(), 1.0);
+        GateRouteCoordinator.Result result = gateRouteCoordinator.start(
+                npc.getEntity().getLocation(), target, gates, serverTick);
+        if (result == GateRouteCoordinator.Result.IN_PROGRESS) return true;
+        gateRouteCoordinator = null;
+        return false;
+    }
+
     private NavigationResult navigationResult(long serverTick, LivingNpcConfig config) {
         if (navigationTarget == null || !npc.getEntity().getWorld().equals(navigationTarget.getWorld())) {
             return navigationFailed(serverTick, config);
         }
+        if (gateRouteCoordinator != null && gateRouteCoordinator.active()) {
+            GateRouteCoordinator.Result gateResult = gateRouteCoordinator.tick(
+                    npc.getEntity().getLocation(), serverTick);
+            if (gateResult == GateRouteCoordinator.Result.IN_PROGRESS) return NavigationResult.IN_PROGRESS;
+            gateRouteCoordinator = null;
+            if (gateResult == GateRouteCoordinator.Result.COMPLETE) {
+                navigationTarget = null;
+                navigationStage = null;
+                releaseNavigationLease();
+                return NavigationResult.ARRIVED;
+            }
+            return navigationFailed(serverTick, config);
+        }
         double margin = config.navigationDistanceMargin();
-        if (npc.getEntity().getLocation().distanceSquared(navigationTarget) <= margin * margin) {
+        if (navigationTargetReached(npc.getEntity().getLocation(), navigationTarget, margin)) {
             navigationTarget = null;
+            navigationStage = null;
             releaseNavigationLease();
             return NavigationResult.ARRIVED;
         }
+
         if (serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
             npc.getNavigator().cancelNavigation();
             return navigationFailed(serverTick, config);
@@ -1508,13 +1640,28 @@ final class FarmerRuntime {
         return NavigationResult.IN_PROGRESS;
     }
 
+    static boolean navigationTargetReached(Location current, Location target, double margin) {
+        if (current == null || target == null || current.getWorld() == null
+                || !current.getWorld().equals(target.getWorld())) {
+            return false;
+        }
+        double deltaX = current.getX() - target.getBlockX();
+        double deltaZ = current.getZ() - target.getBlockZ();
+        return deltaX * deltaX + deltaZ * deltaZ <= margin * margin
+                && Math.abs(current.getY() - target.getBlockY()) < 1.0;
+    }
+
     private NavigationResult navigationFailed(long serverTick, LivingNpcConfig config) {
+        if (gateRouteCoordinator != null) gateRouteCoordinator.cancel();
+        gateRouteCoordinator = null;
         navigationTarget = null;
+        navigationStage = null;
         releaseNavigationLease();
         activeDeliveryChest = null;
         nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
         return NavigationResult.FAILED;
     }
+
 
     private int randomDelay(LivingNpcConfig config) {
         return scaledDelay(randomBetween(config.actionDelayMinTicks(), config.actionDelayMaxTicks()));
@@ -1529,6 +1676,8 @@ final class FarmerRuntime {
     }
 
     void suspend() {
+        if (gateRouteCoordinator != null) gateRouteCoordinator.cancel();
+        gateRouteCoordinator = null;
         if (npc.isSpawned() && npc.getEntity() instanceof HumanEntity human && human.isSleeping()) {
             human.wakeup(false);
         }
@@ -1582,6 +1731,7 @@ final class FarmerRuntime {
         currentWork = null;
         nextAmbientTick = 0L;
         navigationTarget = null;
+        navigationStage = null;
         releaseNavigationLease();
         clearSocial();
     }
@@ -1599,8 +1749,11 @@ final class FarmerRuntime {
     }
 
     private void navigationPreempted() {
+        if (gateRouteCoordinator != null) gateRouteCoordinator.cancel();
+        gateRouteCoordinator = null;
         if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
         navigationTarget = null;
+        navigationStage = null;
         navigationLeaseOwner = null;
     }
 
@@ -1608,5 +1761,12 @@ final class FarmerRuntime {
         if (navigationLeaseOwner == null) return;
         navigationLeases.release(npc.getUniqueId(), navigationLeaseOwner);
         navigationLeaseOwner = null;
+    }
+
+    void observeGateOpened(String gateKey) {
+        if (gateRouteCoordinator != null) gateRouteCoordinator.gateOpenIntent(gateKey);
+    }
+
+    private record BedLookup(Location location, String debug) {
     }
 }

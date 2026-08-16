@@ -233,6 +233,11 @@ final class FarmerManager {
         return runtime == null ? null : runtime.phase();
     }
 
+    void observeGateOpened(UUID npcUuid, String gateKey) {
+        FarmerRuntime runtime = runtimes.get(npcUuid);
+        if (runtime != null) runtime.observeGateOpened(gateKey);
+    }
+
     List<NPC> npcs() {
         return definitions.keySet().stream()
                 .map(uuid -> CitizensAPI.getNPCRegistry().getByUniqueId(uuid))
@@ -338,8 +343,17 @@ final class FarmerManager {
             return !indoor && center.getWorld().hasStorm()
                     ? "Trời đang mưa" : "Ngoài ca " + definition.activeRole().storageKey();
         }
-        if (center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()) {
-            return "Không có người chơi trong " + (int) config.activationRange() + " block quanh khu nghề";
+        boolean playerNearby = !center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()
+                || !npc.getEntity().getWorld().getNearbyPlayers(
+                        npc.getEntity().getLocation(), config.activationRange()).isEmpty();
+        if (!playerNearby && definition.activeRole() == ResidentRole.MINER) {
+            playerNearby = village.miningZones().stream().map(MiningZone::corner).map(StoredLocation::resolve)
+                    .filter(java.util.Objects::nonNull)
+                    .anyMatch(corner -> !corner.getWorld().getNearbyPlayers(corner, config.activationRange()).isEmpty());
+        }
+        if (!playerNearby) {
+            return "Không có người chơi trong " + (int) config.activationRange()
+                    + " block quanh NPC, khu nghề hoặc Khu đào";
         }
         return "SẴN SÀNG - nghề " + definition.activeRole().storageKey();
     }
@@ -409,7 +423,6 @@ final class FarmerManager {
     boolean selectJob(UUID uuid, ResidentRole role) {
         FarmerDefinition current = definitions.get(uuid);
         if (current == null || role == null
-                || !current.profile().hasRole(role)
                 || !ReleasePolicy.roleEnabled(role)) {
             return false;
         }
@@ -507,15 +520,13 @@ final class FarmerManager {
         pathCache.tick(serverTick, config);
         rolesChangedThisTick = Set.of();
         selectActiveRoles(serverTick);
-        scheduleSocial(serverTick);
         for (FarmerRuntime runtime : runtimes.values()) {
             FarmerDefinition definition = definitions.get(runtime.npcUuid());
-            if (rolesChangedThisTick.contains(runtime.npcUuid())) continue;
             if (definition == null) continue;
             try {
-                boolean sleeping = !externallyBusy.contains(runtime.npcUuid())
-                        && runtime.tickSleep(serverTick, config);
-                if (!sleeping && ReleasePolicy.roleEnabled(definition.activeRole())
+                boolean sleeping = runtime.tickSleep(serverTick, config);
+                if (!sleeping && !rolesChangedThisTick.contains(runtime.npcUuid())
+                        && ReleasePolicy.roleEnabled(definition.activeRole())
                         && !externallyBusy.contains(runtime.npcUuid())
                         && definition.activeRole() != ResidentRole.RANCHER
                         && definition.activeRole() != ResidentRole.FISHER
@@ -533,6 +544,7 @@ final class FarmerManager {
                 }
             }
         }
+        scheduleSocial(serverTick);
         if (progressDirty && serverTick >= nextProgressSaveTick) {
             progressDirty = !save();
             nextProgressSaveTick = serverTick + 1200L;
@@ -551,6 +563,10 @@ final class FarmerManager {
 
     boolean roleChangedThisTick(UUID npcUuid) {
         return rolesChangedThisTick.contains(npcUuid);
+    }
+
+    NavigationLeaseManager navigationLeases() {
+        return navigationLeases;
     }
 
     void setExternallyBusy(Set<UUID> npcUuids) {
@@ -575,13 +591,42 @@ final class FarmerManager {
     }
 
     void shutdown() {
-        for (FarmerRuntime runtime : runtimes.values()) {
-            runtime.suspend();
+        RuntimeException failure = null;
+        for (FarmerRuntime runtime : List.copyOf(runtimes.values())) {
+            try {
+                runtime.suspend();
+            } catch (RuntimeException exception) {
+                failure = collectFailure(failure, exception);
+            }
         }
-        seatManager.shutdown(npcs());
-        activityPointManager.shutdown();
-        navigationLeases.clear();
-        save();
+        runtimes.clear();
+        try {
+            seatManager.shutdown(npcs());
+        } catch (RuntimeException exception) {
+            failure = collectFailure(failure, exception);
+        }
+        try {
+            activityPointManager.shutdown();
+        } catch (RuntimeException exception) {
+            failure = collectFailure(failure, exception);
+        }
+        try {
+            navigationLeases.clear();
+        } catch (RuntimeException exception) {
+            failure = collectFailure(failure, exception);
+        }
+        try {
+            save();
+        } catch (RuntimeException exception) {
+            failure = collectFailure(failure, exception);
+        }
+        if (failure != null) throw failure;
+    }
+
+    private RuntimeException collectFailure(RuntimeException current, RuntimeException next) {
+        if (current == null) return next;
+        if (current != next) current.addSuppressed(next);
+        return current;
     }
 
     private boolean update(FarmerDefinition definition) {
@@ -672,9 +717,10 @@ final class FarmerManager {
                 amount -> awardExperience(npc.getUniqueId(), ResidentRole.FARMER, amount));
     }
 
-    private void configureWorkerNpc(NPC npc) {
+    static void configureWorkerNpc(NPC npc) {
         npc.setProtected(false);
-        npc.data().remove(NPC.Metadata.RESET_PITCH_ON_TICK);
+        npc.data().remove("reset-pitch-on-tick");
+        LivingNavigation.configureNpc(npc);
     }
 
     private void selectActiveRoles(long serverTick) {

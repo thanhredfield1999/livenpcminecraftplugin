@@ -38,13 +38,15 @@ LivingNPC uses assigned beds for sleep and village seats for rest and lunch. A c
 
 Output: `build/libs/living-npc-0.6.0-rc.2.jar`.
 
-To build, back up the live plugin, deploy the JAR, start Paper and check NPC runtime logs automatically:
+To stop Paper cleanly through local RCON, build, back up the live plugin, deploy the JAR, restart Paper and check NPC runtime logs automatically:
 
 ```powershell
 .\tools\build-deploy-smoke.ps1
 ```
 
-The check waits for Paper and LivingNPC startup, then observes `logs/latest.log` for three minutes. Exit code `0` means at least one active NPC runtime was healthy, `1` means startup/runtime failure, and `2` means startup was clean but no active NPC runtime was observed (for example, no nearby player or the NPC was outside its shift). Paper remains running after the check. Stop it cleanly before running the script again; the script never hot-reloads a JAR.
+The check uses Paper's RCON `stop` command when the server is already running, waits for a clean shutdown, and never forcibly terminates Java. Run `tools/configure-paper-rcon.ps1` once from an elevated PowerShell window and restart Paper once before relying on automatic shutdown. The setup chooses an unused random port, generates a strong password in the live `server.properties`, creates a timestamped backup and blocks remote access to that port with Windows Firewall. Use `-NoAutoStop` to reject a running server instead.
+
+The check waits for Paper and LivingNPC startup, then observes `logs/latest.log` for three minutes. Exit code `0` means at least one active NPC runtime was healthy, `1` means startup/runtime failure, and `2` means startup was clean but no active NPC runtime was observed (for example, no nearby player or the NPC was outside its shift). Paper remains running after the check; a later deployment stops it cleanly through RCON. The script never hot-reloads a JAR.
 
 To re-check the current server without building, deploying or restarting it:
 
@@ -85,7 +87,7 @@ Later-season source currently includes:
 - Ranch zones are shared village infrastructure rather than per-NPC assignments. Cow, sheep, chicken, pig and rabbit breeding is supported; rabbits use carrots. One rancher owns the zone operation at a time, and overlapping ranch zones from another village are rejected so two NPCs cannot select the same herd concurrently.
 - Each village has a configurable per-species animal limit, default 8. Above the limit, a rancher handles at most 2 surplus adults per cycle while preserving at least two adult breeders. Actual mob death drops are captured into village virtual storage without duplicating ground drops.
 - An idle rancher patrols safe reachable points inside the bounded ranch instead of standing at the zone center. Animals observed inside the ranch are remembered for the current server session; if one escapes within the bounded recovery radius, the rancher can visibly lead that known herd member back without teleporting or claiming unrelated wild animals. Animals already leashed by a player are never taken.
-- Citizens `DoorExaminer` owns wooden-door and fence-gate traversal. It treats gates as pathable, opens them when the NPC reaches them and closes them after passage; LivingNPC does not keep a second timer that leaves livestock gates open.
+- Citizens `DoorExaminer` owns wooden-door traversal. Fence-gate routing is explicit and bounded: an admin registers up to 32 `Cổng điều hướng NPC` per village in the infrastructure GUI; Farmer/Rancher only inspect configured, loaded fence-gate blocks near the active route, open the selected gate at passage time and close it afterward. `Cổng khách` remains a separate visitor spawn/exit point and is never implicitly reused as a navigation gate.
 - `Ghế nghỉ & bàn ăn` stores shared village seats. Click `Thêm ghế`, then right-click a Stair. A Stair without a solid block in front becomes a rest seat; one facing a solid table block becomes a dining seat. The Stair direction fixes the NPC's seated yaw.
 - Villages can have unlimited delivery chests/barrels. Workers sort valid points by distance, require safe standing space and a real Citizens path, skip blocked/high/unloaded points, and try the next location when navigation fails. Stuck teleport is disabled.
 

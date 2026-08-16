@@ -35,6 +35,18 @@ final class NeedsStore {
                     + exception.getMessage());
             return needs;
         }
+        Integer loadedSchemaVersion = schemaVersion(yaml);
+        if (loadedSchemaVersion == null) {
+            writable = false;
+            logger.severe("needs.yml has an invalid schema-version; writes are disabled.");
+            return needs;
+        }
+        if (loadedSchemaVersion > SCHEMA_VERSION) {
+            writable = false;
+            logger.severe("needs.yml uses unsupported schema version " + loadedSchemaVersion
+                    + "; this plugin supports up to " + SCHEMA_VERSION + ". Writes are disabled.");
+            return needs;
+        }
         ConfigurationSection root = yaml.getConfigurationSection("residents");
         if (root == null) return needs;
         for (String key : root.getKeys(false)) {
@@ -88,5 +100,14 @@ final class NeedsStore {
             logger.severe("Could not save resident needs: " + exception.getMessage());
             return false;
         }
+    }
+
+    private Integer schemaVersion(YamlConfiguration yaml) {
+        if (!yaml.contains("schema-version")) return 1;
+        Object value = yaml.get("schema-version");
+        if (!(value instanceof Number number)) return null;
+        double version = number.doubleValue();
+        return Double.isFinite(version) && version == Math.rint(version)
+                && version > 0 && version <= Integer.MAX_VALUE ? (int) version : null;
     }
 }

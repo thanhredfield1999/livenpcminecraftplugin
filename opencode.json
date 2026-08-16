@@ -1,0 +1,17 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "references": {
+    "minecraft-workflow": {
+      "path": "../multitask-opencode",
+      "description": "Shared Minecraft engineering standards, patterns, templates, and repository-boundary rules. LivingNPC source, tests, AGENTS.md, and CURRENT_STATE.md remain authoritative."
+    },
+    "botchecker": {
+      "path": "../botcheckerminecraft-botchecker",
+      "description": "Mineflayer integration-test client for player-visible Minecraft journeys. Use when designing or running LivingNPC journey tests; do not edit it during LivingNPC-only work."
+    },
+    "hermes": {
+      "path": "../hermes",
+      "description": "Hermes CLI agent config, skills, memories. Read-only reference for model routing policy and Notion integration. Do not edit unless user requests cross-repo change."
+    }
+  }
+}

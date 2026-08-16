@@ -240,6 +240,68 @@ class NpcEconomyTest {
     }
 
     @Test
+    void committedRoleProductionIsImmediatelyDurable() throws IOException {
+        NpcEconomy economy = economy(64, 32);
+        UUID npc = UUID.randomUUID();
+
+        assertTrue(economy.commitRoleProduction(
+                npc, "village", ResidentRole.MINER, "raw_iron", 1, 12, 10L));
+
+        NpcEconomy reloaded = new NpcEconomy(
+                new NpcEconomyStore(temporaryDirectory.toFile(), Logger.getAnonymousLogger()),
+                new NpcPriceBook(temporaryDirectory.toFile()),
+                LivingNpcConfig.load(new YamlConfiguration()));
+        assertEquals(1, reloaded.villageAccount("village").quantity("raw_iron"));
+        assertEquals(1, reloaded.account(npc).roleProduction("miner"));
+    }
+
+    @Test
+    void committedRoleProductionRollsBackWhenEconomyStoreIsNotWritable() throws IOException {
+        Files.writeString(temporaryDirectory.resolve("prices.yml"), "npc-prices:\n  raw_iron: 2.5\n");
+        Files.writeString(temporaryDirectory.resolve("economy.yml"), "accounts: [broken\n");
+        NpcEconomy economy = new NpcEconomy(
+                new NpcEconomyStore(temporaryDirectory.toFile(), Logger.getAnonymousLogger()),
+                new NpcPriceBook(temporaryDirectory.toFile()),
+                LivingNpcConfig.load(new YamlConfiguration()));
+        UUID npc = UUID.randomUUID();
+
+        assertFalse(economy.commitRoleProduction(
+                npc, "village", ResidentRole.MINER, "raw_iron", 1, 12, 10L));
+
+        assertEquals(0, economy.villageAccount("village").quantity("raw_iron"));
+        assertEquals(0, economy.account(npc).producedThisShift());
+        assertEquals(0, economy.account(npc).roleProduction("miner"));
+    }
+
+    @Test
+    void futureEconomySchemaDisablesWritesWithoutReplacingTheFile() throws IOException {
+        Path file = temporaryDirectory.resolve("economy.yml");
+        String original = "schema-version: 4\naccounts: {}\nfuture-field: preserve-me\n";
+        Files.writeString(file, original);
+        NpcEconomyStore store = new NpcEconomyStore(
+                temporaryDirectory.toFile(), Logger.getAnonymousLogger());
+        NpcEconomy economy = new NpcEconomy(store, new NpcPriceBook(temporaryDirectory.toFile()),
+                LivingNpcConfig.load(new YamlConfiguration()));
+
+        assertFalse(store.save());
+        assertFalse(economy.addRoleProduction(
+                UUID.randomUUID(), "village", ResidentRole.FISHER, "cod", 1, 12, 1L));
+        assertEquals(original, Files.readString(file));
+    }
+
+    @Test
+    void invalidEconomySchemaTypeDisablesWritesWithoutReplacingTheFile() throws IOException {
+        Path file = temporaryDirectory.resolve("economy.yml");
+        String original = "schema-version: future\naccounts: {}\n";
+        Files.writeString(file, original);
+        NpcEconomyStore store = new NpcEconomyStore(
+                temporaryDirectory.toFile(), Logger.getAnonymousLogger());
+
+        assertFalse(store.save());
+        assertEquals(original, Files.readString(file));
+    }
+
+    @Test
     void transformsVillageItemsAtomicallyWithinRoleQuota() throws IOException {
         NpcEconomy economy = economy(5, 4);
         UUID npc = UUID.randomUUID();

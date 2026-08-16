@@ -39,6 +39,10 @@ final class NpcEconomyStore {
         return List.copyOf(accounts.values());
     }
 
+    boolean writable() {
+        return writable;
+    }
+
     boolean remove(UUID npcUuid) {
         NpcAccount removedAccount = accounts.remove(npcUuid);
         List<Map<String, Object>> previousJournal = new ArrayList<>(journal);
@@ -205,9 +209,20 @@ final class NpcEconomyStore {
                 return;
             }
         }
+        Integer loadedSchemaVersion = schemaVersion(yaml);
+        if (loadedSchemaVersion == null) {
+            writable = false;
+            logger.severe("economy.yml has an invalid schema-version; writes are disabled.");
+            return;
+        }
+        if (loadedSchemaVersion > SCHEMA_VERSION) {
+            writable = false;
+            logger.severe("economy.yml uses unsupported schema version " + loadedSchemaVersion
+                    + "; this plugin supports up to " + SCHEMA_VERSION + ". Writes are disabled.");
+            return;
+        }
         ConfigurationSection root = yaml.getConfigurationSection("accounts");
-        int loadedSchemaVersion = yaml.getInt("schema-version", 1);
-        boolean resetLegacyQuota = yaml.getInt("schema-version", 1) < 2;
+        boolean resetLegacyQuota = loadedSchemaVersion < 2;
         if (root != null) {
             for (String key : root.getKeys(false)) {
                 try {
@@ -256,5 +271,14 @@ final class NpcEconomyStore {
         if (file.exists() && loadedSchemaVersion < SCHEMA_VERSION) {
             save();
         }
+    }
+
+    private Integer schemaVersion(YamlConfiguration yaml) {
+        if (!yaml.contains("schema-version")) return 1;
+        Object value = yaml.get("schema-version");
+        if (!(value instanceof Number number)) return null;
+        double version = number.doubleValue();
+        return Double.isFinite(version) && version == Math.rint(version)
+                && version > 0 && version <= Integer.MAX_VALUE ? (int) version : null;
     }
 }

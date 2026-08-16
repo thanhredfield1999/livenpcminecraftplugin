@@ -47,6 +47,42 @@ class NeedsStoreTest {
     }
 
     @Test
+    void futureSchemaDisablesWritesWithoutReplacingTheFile() throws Exception {
+        File file = tempDir.resolve("needs.yml").toFile();
+        String original = "schema-version: 2\nresidents: {}\nfuture-field: preserve-me\n";
+        Files.writeString(file.toPath(), original);
+        NeedsStore store = new NeedsStore(tempDir.toFile(), Logger.getAnonymousLogger());
+
+        assertTrue(store.load().isEmpty());
+        assertFalse(store.save(Map.of()));
+        assertEquals(original, Files.readString(file.toPath()));
+    }
+
+    @Test
+    void invalidSchemaTypeDisablesWritesWithoutReplacingTheFile() throws Exception {
+        File file = tempDir.resolve("needs.yml").toFile();
+        String original = "schema-version: future\nresidents: {}\n";
+        Files.writeString(file.toPath(), original);
+        NeedsStore store = new NeedsStore(tempDir.toFile(), Logger.getAnonymousLogger());
+
+        assertTrue(store.load().isEmpty());
+        assertFalse(store.save(Map.of()));
+        assertEquals(original, Files.readString(file.toPath()));
+    }
+
+    @Test
+    void fractionalSchemaDisablesWritesWithoutReplacingTheFile() throws Exception {
+        File file = tempDir.resolve("needs.yml").toFile();
+        String original = "schema-version: 1.5\nresidents: {}\n";
+        Files.writeString(file.toPath(), original);
+        NeedsStore store = new NeedsStore(tempDir.toFile(), Logger.getAnonymousLogger());
+
+        assertTrue(store.load().isEmpty());
+        assertFalse(store.save(Map.of()));
+        assertEquals(original, Files.readString(file.toPath()));
+    }
+
+    @Test
     void clampsUnsafePersistedValues() throws Exception {
         UUID uuid = UUID.randomUUID();
         YamlConfiguration yaml = new YamlConfiguration();

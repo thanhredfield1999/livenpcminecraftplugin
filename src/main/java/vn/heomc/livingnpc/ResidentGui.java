@@ -9,6 +9,7 @@ import net.citizensnpcs.api.npc.NPC;
 import net.citizensnpcs.api.event.NPCRightClickEvent;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.Material;
 import org.bukkit.Location;
 import org.bukkit.block.Block;
@@ -52,14 +53,17 @@ final class ResidentGui implements Listener {
     static final int WORK_ZONE_FISHING_SLOT = 18;
     static final int WORK_ZONE_RANCH_SLOT = 19;
     static final int WORK_ZONE_MARKET_SLOT = 20;
+    static final int WORK_ZONE_MINING_SLOT = 21;
     static final int WORK_ZONE_SCENIC_SLOT = 22;
     static final int WORK_ZONE_GATE_SLOT = 23;
     static final int WORK_ZONE_VISITORS_SLOT = 24;
+    static final int WORK_ZONE_NAVIGATION_GATES_SLOT = 25;
     static final int WORK_ZONE_SEATS_SLOT = 26;
     static final int WORK_ZONE_BACK_SLOT = 44;
     private static final int ADD_SEAT_SLOT = 49;
     private static final int ADD_RANCH_PEN_SLOT = 49;
     private static final int ADD_MINING_ZONE_SLOT = 49;
+    private static final int ADD_NAVIGATION_GATE_SLOT = 49;
     private static final long PLACEMENT_TIMEOUT_MILLIS = 120_000L;
     private final LivingNpcPlugin plugin;
     private final Map<UUID, PlacementSession> placements = new HashMap<>();
@@ -71,7 +75,7 @@ final class ResidentGui implements Listener {
 
     void openList(Player player) {
         ResidentMenu menu = new ResidentMenu(
-                ResidentMenu.Type.VILLAGE_LIST, null, 54, Component.text("LivingNPC - Danh sách làng"));
+                ResidentMenu.Type.VILLAGE_LIST, null, 54, Component.text("Danh sách làng"));
         int slot = 0;
         for (VillageDefinition village : plugin.villages().villages()) {
             if (slot >= 45) break;
@@ -131,7 +135,7 @@ final class ResidentGui implements Listener {
                 ReleasePolicy.seasonTwoRuntimesEnabled() ? "Hạ tầng & sinh hoạt làng" : "Sinh hoạt làng",
                 NamedTextColor.AQUA,
                 ReleasePolicy.seasonTwoRuntimesEnabled()
-                        ? List.of("Điểm câu, chuồng trại, điểm chợ và ghế", "Quản lý hạ tầng Season 2")
+                        ? List.of("Điểm câu, chuồng trại, Khu đào, điểm chợ và ghế", "Khu đào có thể setup trước khi mở runtime Miner")
                         : List.of("Đặt điểm chợ và ghế ngồi", "Quản lý sinh hoạt Season 1")));
         menu.getInventory().setItem(LIST_RELOAD_SLOT, item(
                 Material.RECOVERY_COMPASS,
@@ -251,6 +255,7 @@ final class ResidentGui implements Listener {
                 Component.text("Hạ tầng - " + village.name()));
         addReleasedWorkZone(menu, village, WORK_ZONE_FISHING_SLOT, VillageWorkZoneType.FISHING);
         addReleasedWorkZone(menu, village, WORK_ZONE_RANCH_SLOT, VillageWorkZoneType.RANCH);
+        addReleasedWorkZone(menu, village, WORK_ZONE_MINING_SLOT, VillageWorkZoneType.MINING);
         menu.getInventory().setItem(WORK_ZONE_MARKET_SLOT, item(
                 Material.EMERALD,
                 "Điểm chợ: " + (village.marketPoint() == null ? "[CHƯA ĐẶT]" : "[ĐÃ ĐẶT]"),
@@ -266,8 +271,53 @@ final class ResidentGui implements Listener {
                 "Ghế nghỉ & bàn ăn: " + village.seats().size(),
                 village.seats().isEmpty() ? NamedTextColor.YELLOW : NamedTextColor.GREEN,
                 List.of("Đặt Stair để NPC nghỉ hoặc ăn", "Block rắn trước ghế được nhận là bàn", "Nhấn để quản lý")));
+        menu.getInventory().setItem(WORK_ZONE_GATE_SLOT, item(
+                Material.OAK_FENCE_GATE,
+                "Cổng khách: " + (village.visitorGate() == null ? "[CHƯA ĐẶT]" : "[ĐÃ ĐẶT]"),
+                village.visitorGate() == null ? NamedTextColor.RED : NamedTextColor.GREEN,
+                List.of("Điểm xuất hiện/rời làng của khách vãng lai", "Nhấn rồi chọn block cạnh vị trí đứng")));
+        menu.getInventory().setItem(WORK_ZONE_NAVIGATION_GATES_SLOT, item(
+                Material.SPRUCE_FENCE_GATE,
+                "Cổng điều hướng NPC: " + village.navigationGates().size() + "/32",
+                village.navigationGates().isEmpty() ? NamedTextColor.YELLOW : NamedTextColor.GREEN,
+                List.of("Chỉ fence gate đã đăng ký mới được NPC mở", "Nhấn để thêm, kiểm tra hoặc xóa cổng")));
         menu.getInventory().setItem(WORK_ZONE_BACK_SLOT, item(
                 Material.ARROW, "Quay lại", NamedTextColor.YELLOW, List.of("Về màn hình làng")));
+        openMenu(player, menu);
+    }
+
+    private void openNavigationGates(Player player, String villageId) {
+        VillageDefinition village = plugin.villages().get(villageId);
+        if (village == null) {
+            openList(player);
+            return;
+        }
+        ResidentMenu menu = new ResidentMenu(
+                ResidentMenu.Type.NAVIGATION_GATE_LIST, null, village.id(), 54,
+                Component.text("Cổng điều hướng - " + village.name()));
+        for (int index = 0; index < village.navigationGates().size() && index < 45; index++) {
+            StoredLocation gate = village.navigationGates().get(index);
+            menu.navigationGatesBySlot().put(index, index);
+            Location resolved = gate.resolve();
+            boolean valid = resolved != null && resolved.getBlock().getBlockData()
+                    instanceof org.bukkit.block.data.type.Gate;
+            menu.getInventory().setItem(index, item(
+                    valid ? Material.SPRUCE_FENCE_GATE : Material.BARRIER,
+                    "Cổng " + (index + 1), valid ? NamedTextColor.GREEN : NamedTextColor.RED,
+                    List.of("World: " + gate.world(),
+                            "XYZ: " + (int) gate.x() + ", " + (int) gate.y() + ", " + (int) gate.z(),
+                            valid ? "Trạng thái: fence gate hợp lệ" : "Trạng thái: world chưa load hoặc block đã đổi",
+                            "Click trái: dịch chuyển tới cổng", "Shift + click phải: xóa cấu hình")));
+        }
+        menu.getInventory().setItem(ADD_NAVIGATION_GATE_SLOT, item(
+                village.navigationGates().size() >= 32 ? Material.BARRIER : Material.SPRUCE_FENCE_GATE,
+                "Thêm cổng điều hướng: " + village.navigationGates().size() + "/32",
+                village.navigationGates().size() >= 32 ? NamedTextColor.RED : NamedTextColor.AQUA,
+                village.navigationGates().size() >= 32
+                        ? List.of("Đã đạt giới hạn 32 cổng")
+                        : List.of("Nhấn rồi click phải trực tiếp fence gate", "NPC không tự quét các cổng chưa đăng ký")));
+        menu.getInventory().setItem(53, item(
+                Material.ARROW, "Quay lại", NamedTextColor.YELLOW, List.of("Về Hạ tầng làng")));
         openMenu(player, menu);
     }
 
@@ -335,11 +385,17 @@ final class ResidentGui implements Listener {
         for (int slot = 0; slot < village.miningZones().size() && slot < 45; slot++) {
             MiningZone zone = village.miningZones().get(slot);
             menu.miningZonesBySlot().put(slot, zone.id());
-            menu.getInventory().setItem(slot, item(Material.IRON_PICKAXE, zone.id(), NamedTextColor.GRAY, List.of(
-                    "World: " + zone.corner().world(),
-                    "Góc 2x2: " + (int) zone.corner().x() + ", " + (int) zone.corner().z(),
-                    "Độ cao: " + zone.minY() + " đến " + zone.maxY(),
-                    "Click trái: dịch chuyển tới khu", "Shift + click phải: xóa khu")));
+            Location corner = zone.corner().resolve();
+            boolean loaded = corner != null && zone.chunksLoaded(corner.getWorld());
+            int mineable = loaded ? mineableBlockCount(zone, corner) : 0;
+            menu.getInventory().setItem(slot, item(Material.IRON_PICKAXE, zone.id(),
+                    !loaded ? NamedTextColor.RED : mineable == 0 ? NamedTextColor.YELLOW : NamedTextColor.GREEN,
+                    List.of(
+                            "World: " + zone.corner().world(),
+                            "Góc 2x2: " + (int) zone.corner().x() + ", " + (int) zone.corner().z(),
+                            "Độ cao: " + zone.minY() + " đến " + zone.maxY(),
+                            loaded ? "Block allowlist hiện tại: " + mineable + "/20" : "Trạng thái: world hoặc chunk chưa load",
+                            "Click trái: dịch chuyển tới khu", "Shift + click phải: mở xác nhận xóa")));
         }
         menu.getInventory().setItem(ADD_MINING_ZONE_SLOT, item(
                 village.miningZones().size() >= 16 ? Material.BARRIER : Material.DEEPSLATE_IRON_ORE,
@@ -523,8 +579,7 @@ final class ResidentGui implements Listener {
         }
         ResidentMenu menu = new ResidentMenu(
                 ResidentMenu.Type.ROLE_LIST, uuid, 36, Component.text("Chọn nghề - " + definition.profile().name()));
-        List<ResidentRole> jobs = definition.profile().roles().stream()
-                .filter(ReleasePolicy::roleEnabled)
+        List<ResidentRole> jobs = ReleasePolicy.enabledRoles().stream()
                 .sorted()
                 .toList();
         int[] jobSlots = ROLE_JOB_SLOTS;
@@ -586,7 +641,7 @@ final class ResidentGui implements Listener {
 
     private void openProfiles(Player player, String villageId) {
         ResidentMenu menu = new ResidentMenu(
-                ResidentMenu.Type.PROFILE_LIST, null, villageId, 54, Component.text("LivingNPC - Chọn mẫu NPC"));
+                ResidentMenu.Type.PROFILE_LIST, null, villageId, 54, Component.text("Chọn mẫu NPC"));
         int slot = 0;
         for (String id : plugin.profiles().ids()) {
             if (slot >= 45) {
@@ -708,10 +763,39 @@ final class ResidentGui implements Listener {
                     beginPlacement(player, new PlacementSession(
                             PlacementType.SET_VISITOR_GATE, null, null, menu.villageId(), null,
                             0, System.currentTimeMillis() + PLACEMENT_TIMEOUT_MILLIS));
+                } else if (slot == WORK_ZONE_NAVIGATION_GATES_SLOT) {
+                    openNavigationGates(player, menu.villageId());
                 } else if (slot == WORK_ZONE_SEATS_SLOT) {
                     openSeats(player, menu.villageId());
                 } else if (slot == WORK_ZONE_BACK_SLOT) {
                     openVillage(player, menu.villageId());
+                }
+            }
+            case NAVIGATION_GATE_LIST -> {
+                Integer index = menu.navigationGatesBySlot().get(slot);
+                VillageDefinition village = plugin.villages().get(menu.villageId());
+                StoredLocation gate = village == null || index == null || index >= village.navigationGates().size()
+                        ? null : village.navigationGates().get(index);
+                if (index != null && event.isShiftClick() && event.isRightClick()) {
+                    if (plugin.villages().removeNavigationGate(menu.villageId(), index)) {
+                        player.sendMessage(Component.text("[ĐÃ XÓA] Cổng điều hướng đã được gỡ.", NamedTextColor.GREEN));
+                    }
+                    openNavigationGates(player, menu.villageId());
+                } else if (gate != null && event.isLeftClick()) {
+                    Location location = gate.resolve();
+                    Location target = location == null ? null : safeLocationNear(location);
+                    if (target != null && player.teleport(target)) {
+                        player.sendMessage(Component.text("[ĐÃ DỊCH CHUYỂN] Tới cổng điều hướng.", NamedTextColor.GREEN));
+                    } else {
+                        player.sendMessage(Component.text("Không tìm được ô đứng an toàn gần cổng.", NamedTextColor.RED));
+                    }
+                } else if (slot == ADD_NAVIGATION_GATE_SLOT && village != null
+                        && village.navigationGates().size() < 32) {
+                    beginPlacement(player, new PlacementSession(
+                            PlacementType.SET_NAVIGATION_GATE, null, null, menu.villageId(), null,
+                            0, System.currentTimeMillis() + PLACEMENT_TIMEOUT_MILLIS));
+                } else if (slot == 53) {
+                    openWorkZones(player, menu.villageId());
                 }
             }
             case RANCH_LIST -> {
@@ -750,20 +834,48 @@ final class ResidentGui implements Listener {
                     MiningZone zone = village == null ? null : village.miningZones().stream()
                             .filter(candidate -> candidate.id().equals(zoneId)).findFirst().orElse(null);
                     if (event.isShiftClick() && event.isRightClick()) {
-                        plugin.villages().removeMiningZone(menu.villageId(), zoneId);
-                        openMiningZones(player, menu.villageId());
+                        openMiningZoneRemoveConfirm(player, menu.villageId(), zone);
                     } else if (event.isLeftClick() && zone != null) {
                         Location location = zone.corner().resolve();
-                        Location target = location == null ? null : safeLocationNear(location);
-                        if (target != null) player.teleport(target);
+                        if (location == null || !zone.chunksLoaded(location.getWorld())) {
+                            player.sendMessage(Component.text(
+                                    "Không thể dịch chuyển: world hoặc chunk của footprint 2x2 chưa load.",
+                                    NamedTextColor.RED));
+                        } else {
+                            Location target = safeMiningTeleportLocation(location);
+                            if (target != null && player.teleport(target)) {
+                                player.sendMessage(Component.text(
+                                        "[ĐÃ DỊCH CHUYỂN] Tới " + zone.id() + ".", NamedTextColor.GREEN));
+                            } else {
+                                player.sendMessage(Component.text(
+                                        "Không tìm được ô đứng an toàn tại " + zone.id() + ".", NamedTextColor.RED));
+                            }
+                        }
                     }
                 } else if (slot == ADD_MINING_ZONE_SLOT) {
                     VillageDefinition village = plugin.villages().get(menu.villageId());
-                    if (village != null && village.miningZones().size() < 16) beginPlacement(player, new PlacementSession(
-                            PlacementType.SET_MINING_ZONE, null, null, menu.villageId(), null,
-                            0, System.currentTimeMillis() + PLACEMENT_TIMEOUT_MILLIS));
+                    if (village != null && village.miningZones().size() < 16) {
+                        beginPlacement(player, new PlacementSession(
+                                PlacementType.SET_MINING_ZONE, null, null, menu.villageId(), null,
+                                0, System.currentTimeMillis() + PLACEMENT_TIMEOUT_MILLIS));
+                    } else {
+                        player.sendMessage(Component.text("Đã đạt giới hạn 16 Khu đào.", NamedTextColor.RED));
+                    }
                 } else if (slot == 53) {
                     openWorkZones(player, menu.villageId());
+                }
+            }
+            case MINING_ZONE_REMOVE_CONFIRM -> {
+                String zoneId = menu.miningZonesBySlot().get(11);
+                if (slot == 11 && zoneId != null) {
+                    if (plugin.villages().removeMiningZone(menu.villageId(), zoneId)) {
+                        player.sendMessage(Component.text("[ĐÃ XÓA] Khu đào đã được gỡ khỏi làng.", NamedTextColor.GREEN));
+                    } else {
+                        player.sendMessage(Component.text("Không thể xóa Khu đào; dữ liệu chưa được thay đổi.", NamedTextColor.RED));
+                    }
+                    openMiningZones(player, menu.villageId());
+                } else if (slot == 15) {
+                    openMiningZones(player, menu.villageId());
                 }
             }
             case SEAT_LIST -> {
@@ -912,15 +1024,12 @@ final class ResidentGui implements Listener {
         dialogueCooldowns.put(player.getUniqueId(), now + 2_000L);
         org.bukkit.entity.Entity entity = event.getNPC().getEntity();
         FarmerPhase sharedPhase = plugin.manager().phase(event.getNPC().getId());
-        FarmerPhase phase = definition.activeRole() == ResidentRole.FISHER
-                && sharedPhase != FarmerPhase.GOING_TO_BED && sharedPhase != FarmerPhase.SLEEPING
-                        ? plugin.fishers().phase(definition.npcUuid())
-                        : definition.activeRole() == ResidentRole.MERCHANT
-                                && sharedPhase != FarmerPhase.GOING_TO_BED && sharedPhase != FarmerPhase.SLEEPING
-                                        ? plugin.merchants().phase(definition.npcUuid())
-                        : CivilProfessionRuntime.zoneFor(definition.activeRole()) != null
-                                && sharedPhase != FarmerPhase.GOING_TO_BED && sharedPhase != FarmerPhase.SLEEPING
-                                        ? plugin.civilProfessions().phase(definition.npcUuid()) : sharedPhase;
+        FarmerPhase phase = FarmerActivityResolver.resolvePhase(
+                definition.activeRole(),
+                sharedPhase,
+                plugin.fishers().phase(definition.npcUuid()),
+                plugin.merchants().phase(definition.npcUuid()),
+                plugin.civilProfessions().phase(definition.npcUuid()));
         player.sendMessage(Component.text(
                 definition.profile().name() + ": " + dialogue(definition, phase, entity.getLocation()),
                 NamedTextColor.GOLD));
@@ -964,6 +1073,7 @@ final class ResidentGui implements Listener {
                     player, session, adjacentLocation(player, clicked, event));
             case SET_VISITOR_GATE -> finishVisitorGate(
                     player, session, adjacentLocation(player, clicked, event));
+            case SET_NAVIGATION_GATE -> finishNavigationGate(player, session, clicked);
             case SET_SEAT -> finishSeat(player, session, clicked);
             case SET_MERCHANT_SELLER, SET_MERCHANT_BUYER -> finishMerchantPoint(
                     player, session, adjacentLocation(player, clicked, event));
@@ -1070,7 +1180,7 @@ final class ResidentGui implements Listener {
             case RANCHER -> "Cho ăn, sinh sản và xử lý vật nuôi dư đàn";
             case COOK -> "Lấy thực phẩm từ kho và nấu tại Khu nấu ăn";
             case CRAFTER -> "Dùng nguyên liệu kho để luyện và chế tạo";
-            case MINER -> "Mô phỏng khai thác, không phá block";
+            case MINER -> "Khai thác block thật trong Khu đào và phục hồi sau cooldown";
             case SECURITY -> "Tuần tra, phát hiện quái và báo động";
             case MERCHANT -> "Mở quầy tại cửa hàng và phục vụ khách vãng lai";
             default -> "Runtime chưa triển khai";
@@ -1105,15 +1215,31 @@ final class ResidentGui implements Listener {
 
     private ItemStack workZoneItem(VillageDefinition village, VillageWorkZoneType type) {
         StoredLocation center = village.workZone(type);
+        Location resolved = center == null ? null : center.resolve();
+        boolean chunksLoaded = resolved != null && validationAreaChunksLoaded(
+                resolved, plugin.config().workZoneValidationRadius());
+        WorkZoneValidation validation = !chunksLoaded ? null : WorkZoneValidator.validate(
+                resolved, type, plugin.config().workZoneValidationRadius(),
+                plugin.config().workZoneValidationVerticalRange());
+        String status = center == null ? "CHƯA ĐẶT"
+                : !chunksLoaded ? "VÙNG KIỂM TRA CHƯA LOAD"
+                : validation.valid() ? "SẴN SÀNG" : "THIẾU TRẠM";
         List<String> lore = new ArrayList<>();
         lore.add(type == VillageWorkZoneType.RANCH
                 ? "Số chuồng: " + village.ranchPens().size() + "/9"
-                : "Trạng thái: " + (center == null ? "CHƯA ĐẶT" : "ĐÃ ĐẶT"));
+                : "Trạng thái: " + status);
         lore.add("Yêu cầu: " + type.required().stream().map(this::stationName).sorted().toList());
-        lore.add("Kiểm tra trong bán kính 6 block, cao +/-3");
+        lore.add("Kiểm tra trong bán kính " + plugin.config().workZoneValidationRadius()
+                + " block, cao +/-" + plugin.config().workZoneValidationVerticalRange());
+        if (validation != null && !validation.valid()) {
+            lore.add("Đang thiếu: " + validation.missing().stream().map(this::stationName).sorted().toList());
+        }
         if (type == VillageWorkZoneType.MINING) {
             lore.add("Khu đào 2x2: " + village.miningZones().size() + "/16");
             lore.add("Click trái: đặt Trạm mỏ; click phải: quản lý Khu đào");
+            if (!ReleasePolicy.roleEnabled(ResidentRole.MINER)) {
+                lore.add("Runtime Miner đang khóa; mục này chỉ dùng để setup và kiểm tra hạ tầng");
+            }
         }
         lore.add(type == VillageWorkZoneType.RANCH
                 ? "Dùng chung cho mọi NPC Chăn nuôi trong làng; mỗi lúc chỉ một NPC thao tác"
@@ -1135,7 +1261,8 @@ final class ResidentGui implements Listener {
                     case FISHING -> Material.FISHING_ROD;
                 },
                 workZoneName(type),
-                center == null ? NamedTextColor.RED : NamedTextColor.GREEN,
+                center == null || !chunksLoaded ? NamedTextColor.RED
+                        : validation.valid() ? NamedTextColor.GREEN : NamedTextColor.YELLOW,
                 lore);
     }
 
@@ -1230,54 +1357,13 @@ final class ResidentGui implements Listener {
         if (definition.activeRole() == ResidentRole.RANCHER) {
             return plugin.ranchers().status(definition.npcUuid(), plugin.config());
         }
-        FarmerPhase phase = definition.activeRole() == ResidentRole.FISHER
-                ? plugin.fishers().phase(definition.npcUuid())
-                : definition.activeRole() == ResidentRole.MERCHANT
-                        ? plugin.merchants().phase(definition.npcUuid())
-                : CivilProfessionRuntime.zoneFor(definition.activeRole()) != null
-                        ? plugin.civilProfessions().phase(definition.npcUuid()) : shared;
-        return switch (phase == null ? FarmerPhase.INACTIVE : phase) {
-            case INACTIVE -> "Đang nghỉ hoặc chờ ca";
-            case GOING_HOME -> "Đang về nhà";
-            case GOING_TO_BED -> "Đang đi tới giường";
-            case SLEEPING -> "Đang ngủ";
-            case WAKING_UP -> "Đang thức dậy";
-            case LEAVING_HOME -> "Đang rời khỏi nhà";
-            case MORNING_ACTIVITY -> "Đang bắt đầu buổi sáng";
-            case GOING_TO_PLOT -> "Đang đi tới ruộng";
-            case FINDING_WORK -> "Đang tìm việc";
-            case GOING_TO_CROP -> "Đang đi tới cây trồng";
-            case INSPECTING -> "Đang kiểm tra cây";
-            case WORKING -> "Đang làm việc";
-            case GOING_TO_STORAGE -> "Đang mang hàng tới kho";
-            case DEPOSITING -> "Đang giao hàng vào kho";
-            case RETURNING_TO_PLOT -> "Đang quay lại khu làm việc";
-            case LUNCH_BREAK -> "Đang nghỉ trưa";
-            case GOING_TO_MARKET -> "Đang đi tới chợ";
-            case SHOPPING -> "Đang mua sắm";
-            case GOING_TO_SCENIC -> "Đang đi ngắm cảnh";
-            case SOCIALIZING -> "Đang trò chuyện";
-            case GOING_TO_SEAT -> "Đang đi tới ghế";
-            case SITTING_REST -> "Đang ngồi nghỉ";
-            case SITTING_DINING -> "Đang dùng bữa";
-            case STANDING_UP -> "Đang đứng dậy";
-            case RESTING -> "Đang nghỉ";
-            case LOOKING_AROUND -> "Đang nhìn xung quanh";
-            case WANDERING -> "Đang đi dạo";
-            case WATCHING_PLAYER -> "Đang quan sát người chơi";
-            case SHELTERING -> "Đang tránh nguy hiểm";
-            case GOING_TO_FISHING_SPOT -> "Đang đi tới điểm câu";
-            case CASTING_LINE -> "Đang thả câu";
-            case WAITING_FOR_BITE -> "Đang chờ cá";
-            case REELING_IN -> "Đang kéo cá";
-            case GOING_TO_WORK_STATION -> "Đang đi tới trạm nghề";
-            case PRODUCING -> "Đang sản xuất";
-            case PATROLLING -> "Đang tuần tra";
-            case ALERTING -> "Đang báo động";
-            case GOING_TO_STALL -> "Đang đi tới cửa hàng";
-            case OPENING_STALL -> "Đang mở quầy";
-            case SERVING -> "Đang phục vụ tại quầy";
-        };
+        FarmerPhase phase = FarmerActivityResolver.resolvePhase(
+                definition.activeRole(),
+                shared,
+                plugin.fishers().phase(definition.npcUuid()),
+                plugin.merchants().phase(definition.npcUuid()),
+                plugin.civilProfessions().phase(definition.npcUuid()));
+        return FarmerActivityResolver.describeActivity(phase);
     }
 
     private String roleName(ResidentRole role) {
@@ -1478,6 +1564,18 @@ final class ResidentGui implements Listener {
         return species;
     }
 
+    private int mineableBlockCount(MiningZone zone, Location corner) {
+        int count = 0;
+        for (int x = 0; x < 2; x++) for (int z = 0; z < 2; z++) {
+            for (int y = zone.minY(); y <= zone.maxY(); y++) {
+                Material material = corner.getWorld().getBlockAt(
+                        corner.getBlockX() + x, y, corner.getBlockZ() + z).getType();
+                if (CivilProfessionRuntime.miningOutput(material).isPresent()) count++;
+            }
+        }
+        return count;
+    }
+
     private String ranchSpeciesName(Animals animal) {
         if (animal instanceof Cow) return "Bò";
         if (animal instanceof Sheep) return "Cừu";
@@ -1526,6 +1624,19 @@ final class ResidentGui implements Listener {
                     "Cổng phải cùng world với làng và có đủ chỗ đứng 2 block.", NamedTextColor.RED));
         }
         openWorkZones(player, session.villageId());
+    }
+
+    private void finishNavigationGate(Player player, PlacementSession session, Block block) {
+        if (!(block.getBlockData() instanceof org.bukkit.block.data.type.Gate)) {
+            player.sendMessage(Component.text("Phải click phải trực tiếp vào fence gate.", NamedTextColor.RED));
+        } else if (plugin.villages().addNavigationGate(session.villageId(), block.getLocation())) {
+            player.sendMessage(Component.text(
+                    "[ĐÃ XONG] NPC có thể dùng cổng này khi nó nằm trên tuyến đường.", NamedTextColor.GREEN));
+        } else {
+            player.sendMessage(Component.text(
+                    "Không thể lưu: cổng phải cùng world, chưa trùng và làng chưa đủ 32 cổng.", NamedTextColor.RED));
+        }
+        openNavigationGates(player, session.villageId());
     }
 
     private void finishMerchantPoint(Player player, PlacementSession session, Location location) {
@@ -1616,6 +1727,31 @@ final class ResidentGui implements Listener {
             if (isSafeStandingLocation(candidate)) return candidate;
         }
         return null;
+    }
+
+    private Location safeMiningTeleportLocation(Location center) {
+        for (int[] offset : new int[][]{{1, 0}, {-1, 0}, {0, 1}, {0, -1}}) {
+            int x = center.getBlockX() + offset[0];
+            int z = center.getBlockZ() + offset[1];
+            if (!center.getWorld().isChunkLoaded(x >> 4, z >> 4)) continue;
+            Location candidate = center.getWorld().getBlockAt(x, center.getBlockY(), z)
+                    .getLocation().add(0.5, 0, 0.5);
+            if (isSafeStandingLocation(candidate)) return candidate;
+        }
+        return null;
+    }
+
+    private boolean validationAreaChunksLoaded(Location center, int radius) {
+        int minChunkX = (center.getBlockX() - radius) >> 4;
+        int maxChunkX = (center.getBlockX() + radius) >> 4;
+        int minChunkZ = (center.getBlockZ() - radius) >> 4;
+        int maxChunkZ = (center.getBlockZ() + radius) >> 4;
+        for (int chunkX = minChunkX; chunkX <= maxChunkX; chunkX++) {
+            for (int chunkZ = minChunkZ; chunkZ <= maxChunkZ; chunkZ++) {
+                if (!center.getWorld().isChunkLoaded(chunkX, chunkZ)) return false;
+            }
+        }
+        return true;
     }
 
     private void toggleNpcActive(Player player, UUID uuid) {
@@ -1741,6 +1877,10 @@ final class ResidentGui implements Listener {
                     || session.type() == PlacementType.SET_SCENIC_POINT
                     || session.type() == PlacementType.SET_VISITOR_GATE) {
                 openWorkZones(player, session.villageId());
+            } else if (session.type() == PlacementType.SET_NAVIGATION_GATE) {
+                openNavigationGates(player, session.villageId());
+            } else if (session.type() == PlacementType.SET_MINING_ZONE) {
+                openMiningZones(player, session.villageId());
             } else if (session.type() == PlacementType.SET_SEAT) {
                 openSeats(player, session.villageId());
             } else {
@@ -1796,6 +1936,26 @@ final class ResidentGui implements Listener {
         openMenu(player, menu);
     }
 
+    private void openMiningZoneRemoveConfirm(Player player, String villageId, MiningZone zone) {
+        if (zone == null) {
+            openMiningZones(player, villageId);
+            return;
+        }
+        ResidentMenu menu = new ResidentMenu(
+                ResidentMenu.Type.MINING_ZONE_REMOVE_CONFIRM, null, villageId, 27,
+                Component.text("Xóa " + zone.id() + "?"));
+        menu.miningZonesBySlot().put(11, zone.id());
+        menu.getInventory().setItem(11, item(
+                Material.LIME_CONCRETE, "Xác nhận xóa " + zone.id(), NamedTextColor.RED,
+                List.of("World: " + zone.corner().world(),
+                        "Góc: " + (int) zone.corner().x() + ", " + (int) zone.corner().z(),
+                        "Thao tác này chỉ xóa cấu hình Khu đào")));
+        menu.getInventory().setItem(15, item(
+                Material.RED_CONCRETE, "Hủy", NamedTextColor.GREEN,
+                List.of("Quay lại danh sách mà không thay đổi")));
+        openMenu(player, menu);
+    }
+
     private ItemStack locationItem(
             Material material, String label, StoredLocation location, boolean done, String instruction) {
         List<String> lore = new ArrayList<>();
@@ -1813,11 +1973,76 @@ final class ResidentGui implements Listener {
     private ItemStack item(Material material, String name, NamedTextColor color, List<String> lore) {
         ItemStack item = new ItemStack(material);
         item.editMeta(meta -> {
-            meta.displayName(Component.text(name, color));
-            meta.lore(lore.stream().map(line -> Component.text(line, NamedTextColor.GRAY)).toList());
+            meta.customName(Component.text(name, color, TextDecoration.BOLD)
+                    .decoration(TextDecoration.ITALIC, false));
+            meta.lore(styledLore(lore));
             meta.addItemFlags(ItemFlag.HIDE_ATTRIBUTES);
         });
         return item;
+    }
+
+    private List<Component> styledLore(List<String> lines) {
+        List<Component> result = new ArrayList<>();
+        boolean actionSection = false;
+        for (String line : lines) {
+            boolean action = isActionLine(line);
+            if (action && !actionSection && !result.isEmpty()) {
+                result.add(Component.empty());
+            }
+            result.add(styledLoreLine(line, action));
+            actionSection = actionSection || action;
+        }
+        return result;
+    }
+
+    private Component styledLoreLine(String line, boolean action) {
+        if (line.isBlank()) return Component.empty();
+        if (action) {
+            NamedTextColor color = line.startsWith("/") ? NamedTextColor.AQUA : NamedTextColor.YELLOW;
+            return Component.text("› ", NamedTextColor.DARK_GRAY)
+                    .append(Component.text(line, color))
+                    .decoration(TextDecoration.ITALIC, false);
+        }
+        int separator = line.indexOf(':');
+        if (separator > 0) {
+            String label = line.substring(0, separator + 1);
+            String value = line.substring(separator + 1).stripLeading();
+            return Component.text(label + " ", NamedTextColor.DARK_GRAY)
+                    .append(Component.text(value, valueColor(value)))
+                    .decoration(TextDecoration.ITALIC, false);
+        }
+        return Component.text(line, valueColor(line)).decoration(TextDecoration.ITALIC, false);
+    }
+
+    private boolean isActionLine(String line) {
+        String normalized = line.toLowerCase(java.util.Locale.ROOT);
+        return normalized.startsWith("nhấn")
+                || normalized.startsWith("click")
+                || normalized.startsWith("chuột")
+                || normalized.startsWith("shift")
+                || normalized.startsWith("giữ shift")
+                || normalized.startsWith("dùng lệnh")
+                || normalized.startsWith("/")
+                || normalized.startsWith("về ")
+                || normalized.startsWith("chọn ");
+    }
+
+    private NamedTextColor valueColor(String value) {
+        String normalized = value.toUpperCase(java.util.Locale.ROOT);
+        if (normalized.contains("CHƯA ĐẶT") || normalized.contains("CHƯA LOAD")
+                || normalized.contains("KHÔNG TỒN TẠI") || normalized.equals("TẮT")) {
+            return NamedTextColor.RED;
+        }
+        if (normalized.contains("SẴN SÀNG") || normalized.contains("ĐÃ ĐẶT")
+                || normalized.contains("ĐANG CHẠY") || normalized.contains("ĐANG CHỌN")
+                || normalized.equals("BẬT")) {
+            return NamedTextColor.GREEN;
+        }
+        if (normalized.contains("ĐANG CHỜ") || normalized.contains("ĐANG KHÓA")
+                || normalized.contains("CHƯA TRIỂN KHAI") || normalized.contains("THIẾU")) {
+            return NamedTextColor.YELLOW;
+        }
+        return NamedTextColor.WHITE;
     }
 
     private void openMenu(Player player, ResidentMenu menu) {

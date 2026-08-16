@@ -5,6 +5,8 @@ import java.util.Map;
 import java.util.UUID;
 import net.kyori.adventure.text.Component;
 import org.bukkit.Bukkit;
+import net.kyori.adventure.text.format.NamedTextColor;
+import net.kyori.adventure.text.format.TextDecoration;
 import org.bukkit.inventory.Inventory;
 import org.bukkit.inventory.InventoryHolder;
 
@@ -15,8 +17,10 @@ final class ResidentMenu implements InventoryHolder {
         TOWN_STORE,
         ACTIVITY_LIST,
         VILLAGE_WORK_ZONES,
+        NAVIGATION_GATE_LIST,
         RANCH_LIST,
         MINING_ZONE_LIST,
+        MINING_ZONE_REMOVE_CONFIRM,
         SEAT_LIST,
         RESIDENT_DETAIL,
         ROLE_LIST,
@@ -37,6 +41,7 @@ final class ResidentMenu implements InventoryHolder {
     private final Map<Integer, String> seatsBySlot = new HashMap<>();
     private final Map<Integer, String> ranchPensBySlot = new HashMap<>();
     private final Map<Integer, String> miningZonesBySlot = new HashMap<>();
+    private final Map<Integer, Integer> navigationGatesBySlot = new HashMap<>();
     private final ResidentRole role;
     private final Inventory inventory;
 
@@ -61,7 +66,11 @@ final class ResidentMenu implements InventoryHolder {
         this.residentUuid = residentUuid;
         this.villageId = villageId;
         this.role = role;
-        this.inventory = Bukkit.createInventory(this, size, title);
+        Component menuTitle = Component.text("LIVING NPC", NamedTextColor.DARK_AQUA, TextDecoration.BOLD)
+                .append(Component.text("  |  ", NamedTextColor.DARK_GRAY, TextDecoration.BOLD))
+                .append(title.color(NamedTextColor.GOLD).decorate(TextDecoration.BOLD))
+                .decoration(TextDecoration.ITALIC, false);
+        this.inventory = Bukkit.createInventory(this, size, menuTitle);
     }
 
     Type type() {
@@ -114,6 +123,10 @@ final class ResidentMenu implements InventoryHolder {
 
     Map<Integer, String> miningZonesBySlot() {
         return miningZonesBySlot;
+    }
+
+    Map<Integer, Integer> navigationGatesBySlot() {
+        return navigationGatesBySlot;
     }
 
     @Override

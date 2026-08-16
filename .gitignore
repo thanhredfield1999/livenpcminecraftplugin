@@ -2,3 +2,10 @@
 .codebase-memory/
 build/
 *.log
+.cursor/
+.firecrawl/
+.hermes/
+.opencode/
+NUL
+botcheckerminecraft/
+release-candidates/

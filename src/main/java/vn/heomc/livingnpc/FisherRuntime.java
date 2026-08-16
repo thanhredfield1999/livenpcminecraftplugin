@@ -17,10 +17,13 @@ import org.bukkit.inventory.ItemStack;
 
 final class FisherRuntime {
     private static final double PRECISE_APPROACH_MARGIN = 1.25;
+    static final String NAVIGATION_OWNER = "fisher-role";
+    private static final int NAVIGATION_PRIORITY = 30;
 
     private final NPC npc;
     private final NpcEconomy economy;
     private final VillageStore villages;
+    private final NavigationLeaseManager navigationLeases;
     private final java.util.function.LongConsumer experienceAwarder;
     private FarmerDefinition definition;
     private FarmerPhase phase = FarmerPhase.INACTIVE;
@@ -34,14 +37,19 @@ final class FisherRuntime {
     private FishHook hook;
     private long castLandingDeadline;
     private boolean castLanded;
+    private long castStartedTick;
+    private final java.util.Map<String, Long> nextHookTelemetryTick = new java.util.HashMap<>();
     private final java.util.Set<String> failedStandingTargets = new java.util.HashSet<>();
+    private final NavigationPause navigationPause = new NavigationPause();
 
     FisherRuntime(NPC npc, FarmerDefinition definition, NpcEconomy economy, VillageStore villages,
+                  NavigationLeaseManager navigationLeases,
                   java.util.function.LongConsumer experienceAwarder) {
         this.npc = npc;
         this.definition = definition;
         this.economy = economy;
         this.villages = villages;
+        this.navigationLeases = navigationLeases;
         this.experienceAwarder = experienceAwarder;
     }
 
@@ -56,11 +64,7 @@ final class FisherRuntime {
 
     void tick(long serverTick, LivingNpcConfig config) {
         if (!npc.isSpawned()) {
-            clearHook();
-            clearHand();
-            phase = FarmerPhase.INACTIVE;
-            fishingWater = null;
-            standingTarget = null;
+            releaseWorkState();
             return;
         }
         if (definition.activeRole() != ResidentRole.FISHER || !definition.enabled(BehaviorFlag.MASTER)) {
@@ -96,9 +100,7 @@ final class FisherRuntime {
         if (!economy.canAcceptRoleProduction(
                 npc.getUniqueId(), village.id(), ResidentRole.FISHER,
                 1, config.fisher().maxCatchPerShift(), shiftKey)) {
-            clearHand();
-            phase = FarmerPhase.RESTING;
-            nextActionTick = Long.MAX_VALUE;
+            stopForQuota();
             return;
         }
         if (requiresFishingRod(phase)) holdRod();
@@ -125,6 +127,7 @@ final class FisherRuntime {
             case WAITING_FOR_BITE -> {
                 faceWater();
                 if (hook == null || !hook.isValid()) {
+                    logHookFailure("HOOK_INVALID", serverTick);
                     phase = FarmerPhase.CASTING_LINE;
                     nextActionTick = serverTick + 20L;
                     break;
@@ -132,6 +135,7 @@ final class FisherRuntime {
                 if (!castLanded) {
                     castLanded = hookInSelectedWater();
                     if (!castLanded && serverTick >= castLandingDeadline) {
+                        logHookFailure("LANDING_TIMEOUT", serverTick);
                         clearHook();
                         phase = FarmerPhase.CASTING_LINE;
                         nextActionTick = serverTick + 20L;
@@ -154,42 +158,116 @@ final class FisherRuntime {
     }
 
     void suspend() {
-        if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
-        releaseWorkState();
+        teardownWorkState(true, FarmerPhase.INACTIVE, null);
     }
 
     void releaseWorkState() {
-        clearHook();
-        clearHand();
-        phase = FarmerPhase.INACTIVE;
+        teardownWorkState(false, FarmerPhase.INACTIVE, null);
+    }
+
+    void releaseForSleep() {
+        teardownWorkState(true, FarmerPhase.INACTIVE, null);
+    }
+
+    void stopForQuota() {
+        teardownWorkState(true, FarmerPhase.RESTING, Long.MAX_VALUE);
+    }
+
+    private void teardownWorkState(
+            boolean cancelNavigator, FarmerPhase targetPhase, Long targetNextActionTick) {
+        teardownWorkState(cancelNavigator, targetPhase, targetNextActionTick, true);
+    }
+
+    private void teardownWorkState(
+            boolean cancelNavigator, FarmerPhase targetPhase, Long targetNextActionTick,
+            boolean clearFailedStandingTargets) {
+        boolean terminalCleanup = cancelNavigator || ownsNavigation();
+        RuntimeException failure = null;
+        try {
+            if (cancelNavigator && ownsNavigation() && npc.getNavigator().isNavigating()) {
+                npc.getNavigator().cancelNavigation();
+            }
+        } catch (RuntimeException exception) {
+            failure = exception;
+        }
+        try {
+            clearHook(terminalCleanup);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        try {
+            clearHand(terminalCleanup);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        phase = targetPhase;
+        if (targetNextActionTick != null) this.nextActionTick = targetNextActionTick;
         fishingWater = null;
         standingTarget = null;
-        failedStandingTargets.clear();
+        if (clearFailedStandingTargets) failedStandingTargets.clear();
+        navigationPause.resume();
+        try {
+            releaseNavigation();
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        if (failure != null) throw failure;
+    }
+
+    private static RuntimeException appendFailure(RuntimeException first, RuntimeException next) {
+        if (first == null) return next;
+        if (first != next) first.addSuppressed(next);
+        return first;
     }
 
     private void startTrip(Location center, long serverTick, LivingNpcConfig config) {
-        Target target = findTarget(center, config.fisher());
-        if (target == null) {
-            failedStandingTargets.clear();
-            phase = FarmerPhase.RESTING;
-            nextActionTick = serverTick + 200L;
-            return;
+        if (!claimNavigation(navigationLeases, npc.getUniqueId(), this::navigationPreempted)) return;
+        FarmerPhase previousPhase = phase;
+        long previousNextActionTick = nextActionTick;
+        long previousNavigationStartedTick = navigationStartedTick;
+        Location previousFishingWater = fishingWater;
+        Location previousStandingTarget = standingTarget;
+        Navigator navigator = null;
+        try {
+            navigationPause.resume();
+            Target target = findTarget(center, config.fisher());
+            if (target == null) {
+                failedStandingTargets.clear();
+                phase = FarmerPhase.RESTING;
+                nextActionTick = serverTick + 200L;
+                cancelAndReleaseNavigation(
+                        navigationLeases, npc.getUniqueId(), npc.getNavigator());
+                return;
+            }
+            fishingWater = target.water();
+            standingTarget = target.standing();
+            navigator = npc.getNavigator();
+            startNavigation(navigator, standingTarget, config.navigationSpeedModifier());
+            navigationStartedTick = serverTick;
+            phase = FarmerPhase.GOING_TO_FISHING_SPOT;
+        } catch (RuntimeException failure) {
+            phase = previousPhase;
+            nextActionTick = previousNextActionTick;
+            navigationStartedTick = previousNavigationStartedTick;
+            fishingWater = previousFishingWater;
+            standingTarget = previousStandingTarget;
+            try {
+                if (navigator == null) releaseNavigation();
+                else cancelAndReleaseNavigation(navigationLeases, npc.getUniqueId(), navigator);
+            } catch (RuntimeException cleanupFailure) {
+                appendFailure(failure, cleanupFailure);
+            }
+            throw failure;
         }
-        fishingWater = target.water();
-        standingTarget = target.standing();
-        Navigator navigator = npc.getNavigator();
-        LivingNavigation.allowDoors(navigator.getLocalParameters())
-                .speedModifier(config.navigationSpeedModifier())
-                .distanceMargin(PRECISE_APPROACH_MARGIN)
-                .pathDistanceMargin(PRECISE_APPROACH_MARGIN)
-                .destinationTeleportMargin(0.0)
-                .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(standingTarget);
-        navigationStartedTick = serverTick;
-        phase = FarmerPhase.GOING_TO_FISHING_SPOT;
     }
 
     private void checkArrival(long serverTick, LivingNpcConfig config) {
+        if (!ownsNavigation()) {
+            if (!claimNavigation(navigationLeases, npc.getUniqueId(), this::navigationPreempted)) return;
+            if (navigationPause.resume() && standingTarget != null) {
+                resumeNavigationAfterPreemption(serverTick, config);
+            }
+        }
         if (standingTarget != null && fishingWater != null && isSafeFishingStanding(standingTarget.getBlock())
                 && isSourceWater(fishingWater.getBlock())
                 && horizontalDistanceSquared(npc.getEntity().getLocation(), standingTarget)
@@ -200,15 +278,87 @@ final class FisherRuntime {
             faceWater();
             phase = FarmerPhase.CASTING_LINE;
             nextActionTick = serverTick + 20L;
+            cancelAndReleaseNavigation(
+                    navigationLeases, npc.getUniqueId(), npc.getNavigator());
         } else if (!npc.getNavigator().isNavigating()
                 || serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
             if (standingTarget != null) failedStandingTargets.add(targetKey(standingTarget));
-            clearHook();
-            clearHand();
-            fishingWater = null;
-            standingTarget = null;
-            phase = FarmerPhase.RESTING;
-            nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+            teardownWorkState(
+                    true, FarmerPhase.RESTING,
+                    serverTick + config.navigationRetryBackoffTicks(), false);
+        }
+    }
+
+    private void resumeNavigationAfterPreemption(long serverTick, LivingNpcConfig config) {
+        Navigator navigator = null;
+        try {
+            navigator = npc.getNavigator();
+            startNavigation(navigator, standingTarget, config.navigationSpeedModifier());
+            navigationStartedTick = serverTick;
+        } catch (RuntimeException failure) {
+            try {
+                if (navigator == null) releaseNavigation();
+                else cancelAndReleaseNavigation(navigationLeases, npc.getUniqueId(), navigator);
+            } catch (RuntimeException cleanupFailure) {
+                appendFailure(failure, cleanupFailure);
+            }
+            throw failure;
+        }
+    }
+
+    static boolean claimNavigation(
+            NavigationLeaseManager leases, java.util.UUID npcUuid, Runnable onPreempt) {
+        return leases.claim(npcUuid, NAVIGATION_OWNER, NAVIGATION_PRIORITY, onPreempt);
+    }
+
+    static void startNavigation(Navigator navigator, Location target, float speedModifier) {
+        navigator.setTarget(target);
+        LivingNavigation.allowDoors(navigator.getLocalParameters())
+                .speedModifier(speedModifier)
+                .distanceMargin(PRECISE_APPROACH_MARGIN)
+                .pathDistanceMargin(PRECISE_APPROACH_MARGIN)
+                .destinationTeleportMargin(0.0)
+                .stuckAction((stuckNpc, stuckNavigator) -> false);
+    }
+
+    static void cancelAndReleaseNavigation(
+            NavigationLeaseManager leases, java.util.UUID npcUuid, Navigator navigator) {
+        try {
+            if (leases.heldBy(npcUuid, NAVIGATION_OWNER) && navigator.isNavigating()) {
+                navigator.cancelNavigation();
+            }
+        } finally {
+            leases.release(npcUuid, NAVIGATION_OWNER);
+        }
+    }
+
+    private boolean ownsNavigation() {
+        return navigationLeases.heldBy(npc.getUniqueId(), NAVIGATION_OWNER);
+    }
+
+    private void releaseNavigation() {
+        navigationLeases.release(npc.getUniqueId(), NAVIGATION_OWNER);
+    }
+
+    private void navigationPreempted() {
+        navigationPause.pause();
+    }
+
+    static final class NavigationPause {
+        private boolean paused;
+
+        void pause() {
+            paused = true;
+        }
+
+        boolean paused() {
+            return paused;
+        }
+
+        boolean resume() {
+            boolean wasPaused = paused;
+            paused = false;
+            return wasPaused;
         }
     }
 
@@ -342,18 +492,29 @@ final class FisherRuntime {
             hook.setVelocity(castVelocity(hook.getLocation(), fishingWater));
             hook.setApplyLure(false);
             castLandingDeadline = serverTick + 20L;
+            castStartedTick = serverTick;
             castLanded = false;
             return true;
         } catch (IllegalArgumentException | IllegalStateException exception) {
-            hook = null;
             return false;
         }
     }
 
     private void clearHook() {
-        if (hook != null && hook.isValid()) hook.remove();
-        hook = null;
+        clearHook(false);
+    }
+
+    private void clearHook(boolean discardHandleOnFailure) {
+        FishHook currentHook = hook;
         castLanded = false;
+        if (currentHook == null) return;
+        try {
+            if (currentHook.isValid()) currentHook.remove();
+            hook = null;
+        } catch (RuntimeException exception) {
+            if (discardHandleOnFailure) hook = null;
+            throw exception;
+        }
     }
 
     static org.bukkit.util.Vector castVelocity(Location origin, Location target) {
@@ -381,6 +542,45 @@ final class FisherRuntime {
                 && Math.abs(hookBlock.getZ() - target.getZ()) <= 1;
     }
 
+    private void logHookFailure(String reason, long serverTick) {
+        if (serverTick < nextHookTelemetryTick.getOrDefault(reason, 0L)) return;
+        nextHookTelemetryTick.put(reason, serverTick + 100L);
+        Location hookLocation = hook == null ? null : hook.getLocation();
+        Block hookBlock = hookLocation == null ? null : hookLocation.getBlock();
+        Block selectedBlock = fishingWater == null ? null : fishingWater.getBlock();
+        int offsetX = hookBlock == null || selectedBlock == null ? Integer.MIN_VALUE
+                : hookBlock.getX() - selectedBlock.getX();
+        int offsetY = hookBlock == null || selectedBlock == null ? Integer.MIN_VALUE
+                : hookBlock.getY() - selectedBlock.getY();
+        int offsetZ = hookBlock == null || selectedBlock == null ? Integer.MIN_VALUE
+                : hookBlock.getZ() - selectedBlock.getZ();
+        NavigationDiagnostics.shared().logFisherHook(hookTelemetryMessage(
+                npc.getUniqueId().toString(), reason,
+                hook == null ? "null" : String.valueOf(hook.getState()),
+                hook != null && hook.isValid(), hook != null && hook.isInWater(),
+                blockPosition(hookBlock), blockPosition(selectedBlock),
+                offsetX, offsetY, offsetZ, Math.max(0L, serverTick - castStartedTick)));
+    }
+
+    static String hookTelemetryMessage(
+            String npcUuid, String reason, String hookState, boolean valid, boolean inWater,
+            String hookBlock, String selectedBlock, int offsetX, int offsetY, int offsetZ, long ageTicks) {
+        return "NPC_FISH_HOOK uuid=" + npcUuid + " reason=" + reason
+                + " hookState=" + hookState + " valid=" + valid + " inWater=" + inWater
+                + " hookBlock=" + hookBlock + " selectedBlock=" + selectedBlock
+                + " offset=" + offset(offsetX) + "," + offset(offsetY) + "," + offset(offsetZ)
+                + " ageTicks=" + ageTicks;
+    }
+
+    private static String blockPosition(Block block) {
+        return block == null ? "unavailable"
+                : block.getWorld().getName() + ":" + block.getX() + "," + block.getY() + "," + block.getZ();
+    }
+
+    private static String offset(int value) {
+        return value == Integer.MIN_VALUE ? "unavailable" : Integer.toString(value);
+    }
+
     private void holdRod() {
         Equipment equipment = npc.getOrAddTrait(Equipment.class);
         if (!ownsHand) {
@@ -395,13 +595,30 @@ final class FisherRuntime {
     }
 
     private void clearHand() {
+        clearHand(false);
+    }
+
+    private void clearHand(boolean discardSnapshotOnFailure) {
         if (!ownsHand) return;
-        npc.getOrAddTrait(Equipment.class).set(EquipmentSlot.HAND, previousHand);
-        if (npc.isSpawned() && npc.getEntity() instanceof LivingEntity living) {
-            living.getEquipment().setItemInMainHand(previousHand);
+        ItemStack handToRestore = previousHand;
+        RuntimeException failure = null;
+        try {
+            npc.getOrAddTrait(Equipment.class).set(EquipmentSlot.HAND, handToRestore);
+        } catch (RuntimeException exception) {
+            failure = exception;
         }
-        previousHand = null;
-        ownsHand = false;
+        try {
+            if (npc.isSpawned() && npc.getEntity() instanceof LivingEntity living) {
+                living.getEquipment().setItemInMainHand(handToRestore);
+            }
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        if (failure == null || discardSnapshotOnFailure) {
+            previousHand = null;
+            ownsHand = false;
+        }
+        if (failure != null) throw failure;
     }
 
     private long randomBetween(long minimum, long maximum) {

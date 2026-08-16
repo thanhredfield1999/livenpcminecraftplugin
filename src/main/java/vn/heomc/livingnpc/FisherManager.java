@@ -21,37 +21,91 @@ final class FisherManager {
 
     void tick(long serverTick, LivingNpcConfig config) {
         java.util.Collection<FarmerDefinition> definitions = residents.definitions();
-        java.util.Set<UUID> current = definitions.stream().map(FarmerDefinition::npcUuid)
-                .filter(uuid -> CitizensAPI.getNPCRegistry().getByUniqueId(uuid) != null)
-                .collect(java.util.stream.Collectors.toSet());
-        runtimes.entrySet().removeIf(entry -> {
-            if (current.contains(entry.getKey())) return false;
-            entry.getValue().suspend();
-            return true;
-        });
+        net.citizensnpcs.api.npc.NPCRegistry registry = CitizensAPI.getNPCRegistry();
+        java.util.Set<UUID> current = new java.util.HashSet<>();
+        Map<UUID, NPC> availableNpcs = new HashMap<>();
         for (FarmerDefinition definition : definitions) {
-            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            UUID npcUuid = definition.npcUuid();
+            try {
+                NPC npc = registry.getByUniqueId(npcUuid);
+                if (npc != null) {
+                    current.add(npcUuid);
+                    availableNpcs.put(npcUuid, npc);
+                }
+            } catch (RuntimeException exception) {
+                current.add(npcUuid);
+                logRuntimeFailure(serverTick, npcUuid, "Citizens lookup failed", exception);
+            }
+        }
+        for (Map.Entry<UUID, FisherRuntime> entry : java.util.List.copyOf(runtimes.entrySet())) {
+            if (current.contains(entry.getKey())) continue;
+            try {
+                entry.getValue().suspend();
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, entry.getKey(), "stale runtime cleanup failed", exception);
+            } finally {
+                runtimes.remove(entry.getKey(), entry.getValue());
+                nextRuntimeErrorLogTick.remove(entry.getKey());
+            }
+        }
+        for (FarmerDefinition definition : definitions) {
+            UUID npcUuid = definition.npcUuid();
+            NPC npc = availableNpcs.get(npcUuid);
             if (npc == null) continue;
-            FisherRuntime runtime = runtimes.computeIfAbsent(definition.npcUuid(), ignored ->
-                    new FisherRuntime(npc, definition, economy, villages,
-                            amount -> residents.awardExperience(definition.npcUuid(), ResidentRole.FISHER, amount)));
-            runtime.updateDefinition(definition);
-            if (residents.roleChangedThisTick(definition.npcUuid())) continue;
-            if (residents.sleeping(definition.npcUuid())) {
-                runtime.releaseWorkState();
+            FisherRuntime runtime;
+            try {
+                runtime = runtimes.computeIfAbsent(npcUuid, ignored ->
+                        new FisherRuntime(npc, definition, economy, villages,
+                                residents.navigationLeases(),
+                                amount -> residents.awardExperience(npcUuid, ResidentRole.FISHER, amount)));
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, npcUuid, "runtime creation failed", exception);
                 continue;
             }
-            if (definition.activeRole() == ResidentRole.FISHER) {
+            try {
+                runtime.updateDefinition(definition);
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, npcUuid, "definition cleanup failed", exception);
+                continue;
+            }
+            try {
+                if (residents.roleChangedThisTick(npcUuid)) continue;
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, npcUuid, "role state lookup failed", exception);
+                continue;
+            }
+            boolean sleeping;
+            try {
+                sleeping = residents.sleeping(npcUuid);
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, npcUuid, "sleep state lookup failed", exception);
+                continue;
+            }
+            if (sleeping) {
+                try {
+                    runtime.releaseForSleep();
+                } catch (RuntimeException exception) {
+                    logRuntimeFailure(serverTick, npcUuid, "sleep cleanup failed", exception);
+                }
+                continue;
+            }
+            ResidentRole activeRole;
+            try {
+                activeRole = definition.activeRole();
+            } catch (RuntimeException exception) {
+                logRuntimeFailure(serverTick, npcUuid, "active role lookup failed", exception);
+                continue;
+            }
+            if (activeRole == ResidentRole.FISHER) {
                 try {
                     runtime.tick(serverTick, config);
                 } catch (RuntimeException exception) {
-                    runtime.suspend();
-                    if (serverTick >= nextRuntimeErrorLogTick.getOrDefault(definition.npcUuid(), 0L)) {
-                        org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.SEVERE,
-                                "LivingNPC fisher tick failed for " + definition.npcUuid()
-                                        + "; other fishers will continue", exception);
-                        nextRuntimeErrorLogTick.put(definition.npcUuid(), serverTick + 1200L);
+                    try {
+                        runtime.suspend();
+                    } catch (RuntimeException cleanupException) {
+                        if (exception != cleanupException) exception.addSuppressed(cleanupException);
                     }
+                    logRuntimeFailure(serverTick, npcUuid, "tick failed", exception);
                 }
             }
         }
@@ -62,9 +116,27 @@ final class FisherManager {
         return runtime == null ? null : runtime.phase();
     }
 
+    private void logRuntimeFailure(
+            long serverTick, UUID npcUuid, String operation, RuntimeException exception) {
+        if (serverTick < nextRuntimeErrorLogTick.getOrDefault(npcUuid, 0L)) return;
+        org.bukkit.Bukkit.getLogger().log(java.util.logging.Level.SEVERE,
+                "LivingNPC fisher " + operation + " for " + npcUuid
+                        + "; other fishers will continue", exception);
+        nextRuntimeErrorLogTick.put(npcUuid, serverTick + 1200L);
+    }
+
     void shutdown() {
-        runtimes.values().forEach(FisherRuntime::suspend);
+        RuntimeException failure = null;
+        for (FisherRuntime runtime : java.util.List.copyOf(runtimes.values())) {
+            try {
+                runtime.suspend();
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
         runtimes.clear();
         nextRuntimeErrorLogTick.clear();
+        if (failure != null) throw failure;
     }
 }

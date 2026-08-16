@@ -86,6 +86,7 @@ final class VisitorManager {
                 EntityType.PLAYER, NAMES[ThreadLocalRandom.current().nextInt(NAMES.length)]);
         npc.setProtected(true);
         npc.data().setPersistent(NPC.Metadata.SHOULD_SAVE, false);
+        LivingNavigation.configureNpc(npc);
         if (!npc.spawn(gate)) {
             npc.destroy();
             merchants.release(stall.merchantUuid(), visitId);
@@ -116,6 +117,7 @@ final class VisitorManager {
         NPC member = CitizensAPI.getTemporaryNPCRegistry().createNPC(type, name);
         member.setProtected(true);
         member.data().setPersistent(NPC.Metadata.SHOULD_SAVE, false);
+        LivingNavigation.configureNpc(member);
         if (member.spawn(gate)) return member;
         member.destroy();
         return null;

@@ -4,8 +4,11 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
+import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
+import java.util.logging.Level;
+import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.ai.Navigator;
 import net.citizensnpcs.api.ai.NavigatorParameters;
 import net.citizensnpcs.api.event.NPCOpenDoorEvent;
@@ -21,26 +24,73 @@ import org.bukkit.event.EventHandler;
 import org.bukkit.event.EventPriority;
 import org.bukkit.event.Listener;
 import org.bukkit.scheduler.BukkitRunnable;
+import org.bukkit.scheduler.BukkitTask;
 
 final class DoubleDoorListener implements Listener {
+    static final String NAVIGATION_OWNER = "door-passage";
+    private static final int NAVIGATION_PRIORITY = 90;
     private static final double OPEN_DISTANCE_SQUARED = 2.75 * 2.75;
     private static final double CENTRE_MARGIN_SQUARED = 0.3 * 0.3;
+    private static final double CENTRE_VERTICAL_MARGIN = 0.75;
     private static final int WAIT_BEFORE_OPEN_TICKS = 40;
     private static final int WAIT_AFTER_OPEN_TICKS = 40;
     private static final int PASSAGE_TIMEOUT_TICKS = 240;
 
     private final LivingNpcPlugin plugin;
+    private final NavigationLeaseManager navigationLeases;
     private final Map<UUID, DoorPassage> activePassages = new HashMap<>();
     private final Map<UUID, DoorTrace> lastTrace = new HashMap<>();
     private final Set<BlockKey> authorizing = new java.util.HashSet<>();
+    private final OwnedTaskRegistry passageTasks = new OwnedTaskRegistry();
 
     DoubleDoorListener(LivingNpcPlugin plugin) {
         this.plugin = plugin;
+        this.navigationLeases = plugin.manager().navigationLeases();
     }
 
     void shutdown() {
-        for (DoorPassage passage : List.copyOf(activePassages.values())) closeDoors(passage);
+        RuntimeException failure = null;
+        try {
+            passageTasks.cancelAll();
+        } catch (RuntimeException exception) {
+            failure = exception;
+        }
+        for (Map.Entry<UUID, DoorPassage> entry : List.copyOf(activePassages.entrySet())) {
+            try {
+                releasePassageAfter(
+                        navigationLeases, entry.getKey(), () -> closeDoors(entry.getValue()));
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else failure.addSuppressed(exception);
+            }
+        }
         activePassages.clear();
+        if (failure != null) throw failure;
+    }
+
+    void recoverObstructedManagedNpcs() {
+        if (plugin.manager() == null) return;
+        for (FarmerDefinition definition : plugin.manager().definitions()) {
+            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            if (npc == null || !npc.isSpawned() || !npc.getNavigator().isNavigating()
+                    || activePassages.containsKey(npc.getUniqueId())) continue;
+            Optional<Block> obstructing = findObstructingDoor(npc.getStoredLocation());
+            if (obstructing.isEmpty()) continue;
+            Block source = DoubleDoorSupport.bottom(obstructing.orElseThrow());
+            Block partner = DoubleDoorSupport.findPartner(source);
+            if (partner != null && closestDoorLeaf(
+                    npc.getStoredLocation(), source.getLocation(), partner.getLocation()).equals(partner.getLocation())) {
+                source = partner;
+            }
+            if (!(source.getBlockData() instanceof Door door)) continue;
+            DoorSides sides = doorSides(npc.getStoredLocation(), source.getLocation(), door.getFacing());
+            if (sides == null || !safeStanding(sides.before()) || !safeStanding(sides.after())) {
+                traceDoor(npc, source, "RECOVERY_BLOCKED_UNSAFE_SIDES");
+                continue;
+            }
+            traceDoor(npc, source, "RECOVERY_INTERSECTING_CLOSED_DOOR");
+            startPassage(npc, source, sides, true);
+        }
     }
 
     @EventHandler(priority = EventPriority.HIGHEST, ignoreCancelled = true)
@@ -49,6 +99,11 @@ final class DoubleDoorListener implements Listener {
         if (plugin.manager() == null || !plugin.manager().manages(npc.getUniqueId())) return;
         Block source = DoubleDoorSupport.bottom(event.getDoor());
         if (authorizing.contains(BlockKey.of(source))) return;
+        Block partner = DoubleDoorSupport.findPartner(source);
+        if (partner != null && closestDoorLeaf(
+                npc.getStoredLocation(), source.getLocation(), partner.getLocation()).equals(partner.getLocation())) {
+            source = partner;
+        }
         event.setCancelled(true);
         if (activePassages.containsKey(npc.getUniqueId())) return;
         if (!withinOpeningRange(npc.getStoredLocation(), source.getLocation())) {
@@ -62,49 +117,86 @@ final class DoubleDoorListener implements Listener {
             traceDoor(npc, source, "BLOCKED_UNSAFE_SIDES");
             return;
         }
-        startPassage(npc, source, sides);
+        startPassage(npc, source, sides, false);
     }
 
-    private void startPassage(NPC npc, Block source, DoorSides sides) {
+    void startPassage(NPC npc, Block source, DoorSides sides, boolean intersectingDoor) {
         Navigator navigator = npc.getNavigator();
         Location originalTarget = navigator.getTargetAsLocation();
         NavigatorParameters originalParameters = navigator.getLocalParameters().clone();
+        if (!claimPassage(navigationLeases, npc.getUniqueId())) {
+            traceDoor(npc, source, "BLOCKED_NAVIGATION_OWNER");
+            return;
+        }
         DoorPassage passage = new DoorPassage(
                 source, sides, originalTarget == null ? null : originalTarget.clone(), originalParameters);
         activePassages.put(npc.getUniqueId(), passage);
-        navigator.setTarget(sides.before());
-        configurePassage(navigator.getLocalParameters(), originalParameters, originalParameters.speedModifier());
-        traceDoor(npc, source, "APPROACH_WAIT");
+        try {
+            navigator.setTarget(passageStartTarget(sides, intersectingDoor));
+            configurePassage(navigator.getLocalParameters(), originalParameters,
+                    intersectingDoor ? 0.0F : originalParameters.speedModifier());
+            if (intersectingDoor) {
+                npc.getEntity().setVelocity(new org.bukkit.util.Vector());
+                passage.phase = PassagePhase.WAITING_TO_OPEN;
+                traceDoor(npc, source, "RECOVERY_WAITING_TO_OPEN");
+            } else {
+                traceDoor(npc, source, "APPROACH_WAIT");
+            }
 
-        new BukkitRunnable() {
+            passage.task = new BukkitRunnable() {
             @Override
             public void run() {
+                try {
+                    tickPassage(npc, passage, navigator, originalParameters);
+                } catch (RuntimeException failure) {
+                    try {
+                        terminatePassage(
+                                passage, () -> abortPassage(npc, passage, "ABORTED_EXCEPTION"));
+                    } catch (RuntimeException cleanupFailure) {
+                        failure.addSuppressed(cleanupFailure);
+                    }
+                    plugin.getLogger().log(Level.WARNING,
+                            "Door passage lỗi cho NPC " + npc.getUniqueId() + "; đã teardown fail-safe.",
+                            failure);
+                }
+            }
+            }.runTaskTimer(plugin, 1L, 1L);
+            passageTasks.add(passage.task);
+        } catch (RuntimeException failure) {
+            rollbackPassageStartup(npc, passage, failure);
+        }
+    }
+
+    private void tickPassage(
+            NPC npc, DoorPassage passage, Navigator navigator,
+            NavigatorParameters originalParameters) {
+                DoorSides sides = passage.sides;
+                Block source = passage.source;
                 if (!npc.isSpawned() || !activePassages.containsKey(npc.getUniqueId())) {
-                    abortPassage(npc, passage, "ABORTED_DESPAWN");
-                    cancel();
+                    terminatePassage(passage, () -> abortPassage(npc, passage, "ABORTED_DESPAWN"));
+                    return;
+                }
+                if (!ownsPassage(navigationLeases, npc.getUniqueId())) {
+                    terminatePassage(passage, () -> relinquishPassage(
+                            npc, passage, "PREEMPTED_OWNER", PassageTargetState.PREEMPTED));
                     return;
                 }
                 passage.elapsedTicks++;
                 if (passage.elapsedTicks >= PASSAGE_TIMEOUT_TICKS) {
-                    abortPassage(npc, passage, "ABORTED_TIMEOUT");
-                    cancel();
+                    terminatePassage(passage, () -> abortPassage(npc, passage, "ABORTED_TIMEOUT"));
                     return;
                 }
                 Location current = npc.getStoredLocation();
                 if (current == null || !current.getWorld().equals(sides.before().getWorld())) {
-                    abortPassage(npc, passage, "ABORTED_WORLD");
-                    cancel();
+                    terminatePassage(passage, () -> abortPassage(npc, passage, "ABORTED_WORLD"));
                     return;
                 }
                 Location expectedTarget = passage.phase == PassagePhase.APPROACHING
                         ? sides.before() : sides.after();
-                if (!sameTarget(navigator.getTargetAsLocation(), expectedTarget)) {
-                    relinquishPassage(npc, passage, "PREEMPTED");
-                    cancel();
-                    return;
-                }
+                PassageTargetState targetState = passageTargetState(
+                        current, navigator.getTargetAsLocation(), expectedTarget);
                 if (passage.phase == PassagePhase.APPROACHING
-                        && current.distanceSquared(sides.before()) <= CENTRE_MARGIN_SQUARED) {
+                        && targetState == PassageTargetState.REACHED) {
                     navigator.setTarget(sides.after());
                     configurePassage(navigator.getLocalParameters(), originalParameters, 0.0F);
                     npc.getEntity().setVelocity(new org.bukkit.util.Vector());
@@ -113,13 +205,24 @@ final class DoubleDoorListener implements Listener {
                     traceDoor(npc, source, "CENTERED_WAITING_TO_OPEN");
                     return;
                 }
+                if (passage.phase == PassagePhase.CROSSING
+                        && targetState == PassageTargetState.REACHED) {
+                    terminatePassage(passage, () -> finishPassage(npc, passage));
+                    return;
+                }
+                if (targetState == PassageTargetState.PREEMPTED
+                        || targetState == PassageTargetState.TARGET_CLEARED) {
+                    terminatePassage(passage, () -> relinquishPassage(
+                            npc, passage, targetState.name(), targetState));
+                    return;
+                }
                 if (passage.phase == PassagePhase.WAITING_TO_OPEN) {
                     npc.getEntity().setVelocity(new org.bukkit.util.Vector());
                     passage.phaseTicks++;
                     if (passage.phaseTicks < WAIT_BEFORE_OPEN_TICKS) return;
                     if (!openDoors(npc, passage)) {
-                        abortPassage(npc, passage, "ABORTED_DOOR_CHANGED");
-                        cancel();
+                        terminatePassage(
+                                passage, () -> abortPassage(npc, passage, "ABORTED_DOOR_CHANGED"));
                         return;
                     }
                     passage.phase = PassagePhase.WAITING_TO_CROSS;
@@ -137,13 +240,88 @@ final class DoubleDoorListener implements Listener {
                     traceDoor(npc, source, "CROSSING");
                     return;
                 }
-                if (passage.phase == PassagePhase.CROSSING
-                        && current.distanceSquared(sides.after()) <= CENTRE_MARGIN_SQUARED) {
-                    finishPassage(npc, passage);
-                    cancel();
-                }
+    }
+
+    boolean hasActivePassage(UUID npcUuid) {
+        return activePassages.containsKey(npcUuid);
+    }
+
+    private void rollbackPassageStartup(NPC npc, DoorPassage passage, RuntimeException failure) {
+        activePassages.remove(npc.getUniqueId(), passage);
+        RuntimeException cleanupFailure = null;
+        try {
+            try {
+                cancelPassageTask(passage);
+            } catch (RuntimeException exception) {
+                cleanupFailure = appendFailure(cleanupFailure, exception);
             }
-        }.runTaskTimer(plugin, 1L, 1L);
+            try {
+                closeDoors(passage);
+            } catch (RuntimeException exception) {
+                cleanupFailure = appendFailure(cleanupFailure, exception);
+            }
+            try {
+                if (navigationLeases.heldBy(npc.getUniqueId(), NAVIGATION_OWNER)) {
+                    Navigator navigator = npc.getNavigator();
+                    Location originalTarget = passage.originalTarget;
+                    if (originalTarget == null) {
+                        try {
+                            navigator.cancelNavigation();
+                        } catch (RuntimeException exception) {
+                            cleanupFailure = appendFailure(cleanupFailure, exception);
+                        }
+                    } else {
+                        boolean restoreFailed = false;
+                        try {
+                            navigator.setTarget(originalTarget);
+                        } catch (RuntimeException exception) {
+                            cleanupFailure = appendFailure(cleanupFailure, exception);
+                            restoreFailed = true;
+                        }
+                        if (restoreFailed) {
+                            try {
+                                navigator.cancelNavigation();
+                            } catch (RuntimeException exception) {
+                                cleanupFailure = appendFailure(cleanupFailure, exception);
+                            }
+                        }
+                    }
+                    try {
+                        restoreParameters(navigator.getLocalParameters(), passage.originalParameters);
+                    } catch (RuntimeException exception) {
+                        cleanupFailure = appendFailure(cleanupFailure, exception);
+                    }
+                }
+            } catch (RuntimeException exception) {
+                cleanupFailure = appendFailure(cleanupFailure, exception);
+            }
+        } finally {
+            releasePassage(navigationLeases, npc.getUniqueId());
+        }
+        if (cleanupFailure != null && failure != cleanupFailure) failure.addSuppressed(cleanupFailure);
+        plugin.getLogger().log(Level.WARNING,
+                "Không thể khởi tạo door passage cho NPC " + npc.getUniqueId()
+                        + "; đã rollback lease và navigator state.",
+                failure);
+    }
+
+    private void cancelPassageTask(DoorPassage passage) {
+        if (passage.task == null) return;
+        BukkitTask current = passage.task;
+        passage.task = null;
+        try {
+            current.cancel();
+        } finally {
+            passageTasks.remove(current);
+        }
+    }
+
+    private void terminatePassage(DoorPassage passage, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } finally {
+            cancelPassageTask(passage);
+        }
     }
 
     private boolean openDoors(NPC npc, DoorPassage passage) {
@@ -176,31 +354,100 @@ final class DoubleDoorListener implements Listener {
 
     private void finishPassage(NPC npc, DoorPassage passage) {
         activePassages.remove(npc.getUniqueId());
-        Navigator navigator = npc.getNavigator();
-        closeDoors(passage);
-        if (passage.originalTarget != null
-                && passage.originalTarget.getWorld().equals(npc.getStoredLocation().getWorld())
-                && passage.originalTarget.distanceSquared(passage.sides.after()) > CENTRE_MARGIN_SQUARED) {
-            navigator.setTarget(passage.originalTarget);
-            restoreParameters(navigator.getLocalParameters(), passage.originalParameters);
-        }
-        traceDoor(npc, passage.source, "RESUMED");
+        releasePassageAfter(navigationLeases, npc.getUniqueId(),
+                () -> terminatePassageCleanup(npc, passage, "RESUMED", true));
     }
 
     private void abortPassage(NPC npc, DoorPassage passage, String result) {
         activePassages.remove(npc.getUniqueId());
-        closeDoors(passage);
-        if (npc.isSpawned() && passage.originalTarget != null) {
-            npc.getNavigator().setTarget(passage.originalTarget);
-            restoreParameters(npc.getNavigator().getLocalParameters(), passage.originalParameters);
-        }
-        traceDoor(npc, passage.source, result);
+        releasePassageAfter(navigationLeases, npc.getUniqueId(),
+                () -> terminatePassageCleanup(npc, passage, result, true));
     }
 
-    private void relinquishPassage(NPC npc, DoorPassage passage, String result) {
+    private void relinquishPassage(
+            NPC npc, DoorPassage passage, String result, PassageTargetState targetState) {
         activePassages.remove(npc.getUniqueId());
-        closeDoors(passage);
-        traceDoor(npc, passage.source, result);
+        releasePassageAfter(navigationLeases, npc.getUniqueId(),
+                () -> terminatePassageCleanup(npc, passage, result,
+                        shouldRestoreOriginalTarget(targetState)));
+    }
+
+    private void terminatePassageCleanup(
+            NPC npc, DoorPassage passage, String result, boolean restoreOriginalTarget) {
+        RuntimeException failure = null;
+        try {
+            closeDoors(passage);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        if (ownsPassage(navigationLeases, npc.getUniqueId())) {
+            Navigator navigator = null;
+            try {
+                navigator = npc.getNavigator();
+            } catch (RuntimeException exception) {
+                failure = appendFailure(failure, exception);
+            }
+            if (navigator != null) {
+                if (restoreOriginalTarget && canRestoreOriginalTarget(npc, passage.originalTarget)) {
+                    try {
+                        navigator.setTarget(passage.originalTarget);
+                    } catch (RuntimeException exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                    try {
+                        restoreParameters(navigator.getLocalParameters(), passage.originalParameters);
+                    } catch (RuntimeException exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                } else if (npc.isSpawned() && navigator.isNavigating()) {
+                    try {
+                        navigator.cancelNavigation();
+                    } catch (RuntimeException exception) {
+                        failure = appendFailure(failure, exception);
+                    }
+                }
+            }
+        }
+        try {
+            traceDoor(npc, passage.source, result);
+        } catch (RuntimeException exception) {
+            failure = appendFailure(failure, exception);
+        }
+        if (failure != null) throw failure;
+    }
+
+    private static boolean canRestoreOriginalTarget(NPC npc, Location originalTarget) {
+        if (originalTarget == null || !npc.isSpawned()) return false;
+        Location current = npc.getStoredLocation();
+        return current != null && current.getWorld() != null
+                && current.getWorld().equals(originalTarget.getWorld());
+    }
+
+    private static RuntimeException appendFailure(RuntimeException first, RuntimeException next) {
+        if (first == null) return next;
+        if (first != next) first.addSuppressed(next);
+        return first;
+    }
+
+    static boolean claimPassage(NavigationLeaseManager leases, UUID npcUuid) {
+        return leases.claim(npcUuid, NAVIGATION_OWNER, NAVIGATION_PRIORITY, null);
+    }
+
+    static void releasePassage(NavigationLeaseManager leases, UUID npcUuid) {
+        leases.release(npcUuid, NAVIGATION_OWNER);
+    }
+
+    static void releasePassageAfter(
+            NavigationLeaseManager leases, UUID npcUuid, Runnable cleanup) {
+        try {
+            cleanup.run();
+        } finally {
+            releasePassage(leases, npcUuid);
+        }
+    }
+
+    static boolean ownsPassage(NavigationLeaseManager leases, UUID npcUuid) {
+        return leases.heldBy(npcUuid, NAVIGATION_OWNER);
     }
 
     private void closeDoors(DoorPassage passage) {
@@ -270,12 +517,73 @@ final class DoubleDoorListener implements Listener {
         return new DoorSides(before, after);
     }
 
+    static Location closestDoorLeaf(Location npcLocation, Location first, Location second) {
+        if (npcLocation == null || first == null || second == null
+                || npcLocation.getWorld() == null || first.getWorld() == null || second.getWorld() == null
+                || !npcLocation.getWorld().equals(first.getWorld())
+                || !npcLocation.getWorld().equals(second.getWorld())) {
+            return first;
+        }
+        Location firstCenter = first.clone().add(0.5, 0, 0.5);
+        Location secondCenter = second.clone().add(0.5, 0, 0.5);
+        return npcLocation.distanceSquared(secondCenter) < npcLocation.distanceSquared(firstCenter) ? second : first;
+    }
+
     static boolean withinOpeningRange(Location npcLocation, Location doorLocation) {
         if (npcLocation == null || doorLocation == null
                 || npcLocation.getWorld() == null || !npcLocation.getWorld().equals(doorLocation.getWorld())) {
             return false;
         }
         return npcLocation.distanceSquared(doorLocation.clone().add(0.5, 0, 0.5)) <= OPEN_DISTANCE_SQUARED;
+    }
+
+    static Optional<Block> findObstructingDoor(Location npcLocation) {
+        if (npcLocation == null || npcLocation.getWorld() == null) return Optional.empty();
+        int minX = (int) Math.floor(npcLocation.getX() - 0.3);
+        int maxX = (int) Math.floor(npcLocation.getX() + 0.3 - 1.0E-9);
+        int minY = (int) Math.floor(npcLocation.getY());
+        int maxY = (int) Math.floor(npcLocation.getY() + 1.8 - 1.0E-9);
+        int minZ = (int) Math.floor(npcLocation.getZ() - 0.3);
+        int maxZ = (int) Math.floor(npcLocation.getZ() + 0.3 - 1.0E-9);
+        for (int x = minX; x <= maxX; x++) {
+            for (int y = minY; y <= maxY; y++) {
+                for (int z = minZ; z <= maxZ; z++) {
+                    Block block = npcLocation.getWorld().getBlockAt(x, y, z);
+                    if (block.getBlockData() instanceof Door door && !door.isOpen()) return Optional.of(block);
+                }
+            }
+        }
+        return Optional.empty();
+    }
+
+    static Location passageStartTarget(DoorSides sides, boolean intersectingDoor) {
+        return intersectingDoor ? sides.after() : sides.before();
+    }
+
+    static Location preemptionRecoveryTarget(Location originalTarget) {
+        return originalTarget == null ? null : originalTarget.clone();
+    }
+
+    static boolean passageTargetReached(Location current, Location target) {
+        if (current == null || target == null || current.getWorld() == null
+                || !current.getWorld().equals(target.getWorld())) return false;
+        double deltaX = current.getX() - target.getX();
+        double deltaZ = current.getZ() - target.getZ();
+        return deltaX * deltaX + deltaZ * deltaZ <= CENTRE_MARGIN_SQUARED
+                && Math.abs(current.getY() - target.getY()) <= CENTRE_VERTICAL_MARGIN;
+    }
+
+    static PassageTargetState passageTargetState(Location current, Location actualTarget, Location expectedTarget) {
+        if (actualTarget != null && !sameTarget(actualTarget, expectedTarget)) {
+            return PassageTargetState.PREEMPTED;
+        }
+        if (passageTargetReached(current, expectedTarget)) return PassageTargetState.REACHED;
+        if (sameTarget(actualTarget, expectedTarget)) return PassageTargetState.OWNED;
+        return PassageTargetState.TARGET_CLEARED;
+    }
+
+    static boolean shouldRestoreOriginalTarget(PassageTargetState state) {
+        return state == PassageTargetState.TARGET_CLEARED;
     }
 
     private static boolean sameTarget(Location actual, Location expected) {
@@ -300,12 +608,20 @@ final class DoubleDoorListener implements Listener {
         CROSSING
     }
 
+    enum PassageTargetState {
+        REACHED,
+        OWNED,
+        TARGET_CLEARED,
+        PREEMPTED
+    }
+
     private static final class DoorPassage {
         private final Block source;
         private final DoorSides sides;
         private final Location originalTarget;
         private final NavigatorParameters originalParameters;
         private final List<OpenedDoor> openedDoors = new ArrayList<>();
+        private BukkitTask task;
         private PassagePhase phase = PassagePhase.APPROACHING;
         private int elapsedTicks;
         private int phaseTicks;

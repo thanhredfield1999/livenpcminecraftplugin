@@ -8,6 +8,7 @@ record VillageDefinition(
         StoredLocation marketPoint,
         StoredLocation scenicPoint,
         StoredLocation visitorGate,
+        java.util.List<StoredLocation> navigationGates,
         int ranchAnimalLimit,
         java.util.Map<VillageWorkZoneType, StoredLocation> workZones,
         java.util.List<RanchPen> ranchPens,
@@ -17,6 +18,7 @@ record VillageDefinition(
         java.util.List<ActivityPoint> activityPoints) {
     VillageDefinition {
         deliveryLocations = deliveryLocations == null ? java.util.List.of() : java.util.List.copyOf(deliveryLocations);
+        navigationGates = navigationGates == null ? java.util.List.of() : java.util.List.copyOf(navigationGates);
         workZones = workZones == null ? java.util.Map.of() : java.util.Map.copyOf(workZones);
         ranchPens = ranchPens == null ? java.util.List.of() : java.util.List.copyOf(ranchPens);
         seats = seats == null ? java.util.List.of() : java.util.List.copyOf(seats);
@@ -30,7 +32,7 @@ record VillageDefinition(
                       StoredLocation marketPoint, StoredLocation scenicPoint) {
         this(id, name, center,
                 deliveryChest == null ? java.util.List.of() : java.util.List.of(deliveryChest),
-                marketPoint, scenicPoint, null, 8, java.util.Map.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of());
+                marketPoint, scenicPoint, null, java.util.List.of(), 8, java.util.Map.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of());
     }
 
     VillageDefinition(String id, String name, StoredLocation center, StoredLocation deliveryChest,
@@ -38,7 +40,7 @@ record VillageDefinition(
                       java.util.Map<VillageWorkZoneType, StoredLocation> workZones) {
         this(id, name, center,
                 deliveryChest == null ? java.util.List.of() : java.util.List.of(deliveryChest),
-                marketPoint, scenicPoint, null, 8, workZones, java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of());
+                marketPoint, scenicPoint, null, java.util.List.of(), 8, workZones, java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of(), java.util.List.of());
     }
     VillageDefinition withDeliveryChest(StoredLocation chest) {
         java.util.ArrayList<StoredLocation> updated = new java.util.ArrayList<>(deliveryLocations);
@@ -96,6 +98,27 @@ record VillageDefinition(
 
     VillageDefinition withVisitorGate(StoredLocation gate) {
         return copy(deliveryLocations, marketPoint, scenicPoint, gate, ranchAnimalLimit, workZones, ranchPens, seats, merchantStalls);
+    }
+
+    VillageDefinition withNavigationGate(StoredLocation gate) {
+        if (gate == null || navigationGates.size() >= 32
+                || navigationGates.stream().anyMatch(existing -> sameBlock(existing, gate))) return this;
+        java.util.ArrayList<StoredLocation> updated = new java.util.ArrayList<>(navigationGates);
+        updated.add(gate);
+        return copyWithNavigationGates(updated);
+    }
+
+    VillageDefinition withoutNavigationGate(int index) {
+        if (index < 0 || index >= navigationGates.size()) return this;
+        java.util.ArrayList<StoredLocation> updated = new java.util.ArrayList<>(navigationGates);
+        updated.remove(index);
+        return copyWithNavigationGates(updated);
+    }
+
+    private VillageDefinition copyWithNavigationGates(java.util.List<StoredLocation> updated) {
+        return new VillageDefinition(id, name, center, deliveryLocations, marketPoint, scenicPoint,
+                visitorGate, updated, ranchAnimalLimit, workZones, ranchPens, seats,
+                merchantStalls, miningZones, activityPoints);
     }
 
     VillageDefinition withRanchAnimalLimit(int limit) {
@@ -192,7 +215,7 @@ record VillageDefinition(
             java.util.List<RanchPen> pens, java.util.List<SeatDefinition> updatedSeats,
             java.util.List<MerchantStall> stalls, java.util.List<MiningZone> mines,
             java.util.List<ActivityPoint> points) {
-        return new VillageDefinition(id, name, center, deliveries, market, scenic, gate, animalLimit,
+        return new VillageDefinition(id, name, center, deliveries, market, scenic, gate, navigationGates, animalLimit,
                 zones, pens, updatedSeats, stalls, mines, points);
     }
 

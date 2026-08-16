@@ -37,6 +37,7 @@ final class CivilProfessionManager {
         runtimes.entrySet().removeIf(entry -> {
             if (managed.contains(entry.getKey())) return false;
             entry.getValue().suspend();
+            miningCoordinator.clear(entry.getKey());
             return true;
         });
         for (FarmerDefinition definition : definitions) {
@@ -66,10 +67,26 @@ final class CivilProfessionManager {
         return runtime == null ? null : runtime.phase();
     }
 
+    String miningDiagnostic(UUID npcUuid) {
+        CivilProfessionRuntime runtime = runtimes.get(npcUuid);
+        return runtime == null ? "Runtime Miner chưa được tạo" : runtime.miningDiagnostic();
+    }
+
     void shutdown() {
-        runtimes.values().forEach(CivilProfessionRuntime::suspend);
+        RuntimeException failure = null;
+        for (Map.Entry<UUID, CivilProfessionRuntime> entry : java.util.List.copyOf(runtimes.entrySet())) {
+            try {
+                entry.getValue().suspend();
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            } finally {
+                miningCoordinator.clear(entry.getKey());
+            }
+        }
         runtimes.clear();
         alarms.clear();
+        if (failure != null) throw failure;
     }
 
     void reloadRecipes() {

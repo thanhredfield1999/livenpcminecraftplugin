@@ -195,18 +195,17 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             return;
         }
         FarmerDefinition farmer = plugin.manager().get(id);
-        FarmerPhase phase = plugin.manager().phase(id);
+        FarmerPhase sharedPhase = plugin.manager().phase(id);
         if (farmer == null) {
             error(sender, "NPC này chưa được LivingNPC quản lý. Dùng /livingnpc tiepnhan <id>.");
             return;
         }
-        if (phase != FarmerPhase.GOING_TO_BED && phase != FarmerPhase.SLEEPING) {
-            if (farmer.activeRole() == ResidentRole.FISHER) {
-                phase = plugin.fishers().phase(farmer.npcUuid());
-            } else if (CivilProfessionRuntime.zoneFor(farmer.activeRole()) != null) {
-                phase = plugin.civilProfessions().phase(farmer.npcUuid());
-            }
-        }
+        FarmerPhase phase = FarmerActivityResolver.resolvePhase(
+                farmer.activeRole(),
+                sharedPhase,
+                plugin.fishers().phase(farmer.npcUuid()),
+                plugin.merchants().phase(farmer.npcUuid()),
+                plugin.civilProfessions().phase(farmer.npcUuid()));
         sender.sendMessage(Component.text("Cư dân " + id + ": " + farmer.profile().name(), NamedTextColor.GOLD));
         sender.sendMessage(Component.text(
                 farmer.profile().title() + " | giới tính=" + farmer.profile().gender()
@@ -277,6 +276,16 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
                 case REELING_IN -> "đang kéo dây câu";
                 case RESTING -> "đang nghỉ giữa các lượt câu";
                 default -> "đang chờ ca hoặc điểm câu";
+            };
+        }
+        if (role == ResidentRole.MERCHANT) {
+            return switch (phase == null ? FarmerPhase.INACTIVE : phase) {
+                case GOING_TO_STALL -> "đang đi tới quầy";
+                case OPENING_STALL -> "đang mở quầy";
+                case SERVING -> "đang phục vụ khách";
+                case GOING_TO_BED -> "đang đi tới giường";
+                case SLEEPING -> "đang ngủ";
+                default -> "đang chờ ca hoặc quầy";
             };
         }
         if (CivilProfessionRuntime.zoneFor(role) != null) {

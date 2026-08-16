@@ -77,14 +77,18 @@ final class ProfessionMonitor {
             return inspectPhase(state, phase, current, npc, serverTick, config.navigationTimeoutTicks());
         }
         String sleep = residents.sleepDebug(definition.npcUuid());
+        if (sleepRetryWaiting(current.getWorld().getTime(), sleep)) {
+            return waiting(state, serverTick, "Đang chờ thử lại đường tới giường");
+        }
         if (sleepFailure(sleep)) {
             return error(state, current, "Không thể ngủ: " + sleep);
         }
-        if (FarmerRuntime.isBedtime(current.getWorld().getTime()) && "RETRY_COOLDOWN".equals(sleep)) {
-            return waiting(state, serverTick, "Đang chờ thử lại đường tới giường");
-        }
         String blocked = blockedReason(definition, npc, config);
         if (blocked != null) return waiting(state, serverTick, "Chưa đủ điều kiện: " + blocked);
+        if (definition.activeRole() == ResidentRole.MINER
+                && (phase == null || phase == FarmerPhase.INACTIVE || phase == FarmerPhase.RESTING)) {
+            return waiting(state, serverTick, civilProfessions.miningDiagnostic(definition.npcUuid()));
+        }
 
         return inspectPhase(state, phase, current, npc, serverTick, config.navigationTimeoutTicks());
     }
@@ -135,13 +139,20 @@ final class ProfessionMonitor {
     }
 
     static boolean sleepFailure(String sleepDebug) {
-        return "BED_NOT_FOUND_OR_OCCUPIED".equals(sleepDebug)
+        return "BED_BLOCK_MISSING".equals(sleepDebug)
+                || "BED_CANONICAL_HALF_INVALID".equals(sleepDebug)
+                || "BED_OCCUPIED".equals(sleepDebug)
                 || "NO_SAFE_BED_STANDING_BLOCK".equals(sleepDebug)
                 || "BED_PATH_UNREACHABLE".equals(sleepDebug)
                 || "BED_NAVIGATION_FAILED".equals(sleepDebug)
                 || "SLEEP_REJECTED".equals(sleepDebug)
                 || "HOME_UNRESOLVED".equals(sleepDebug)
                 || "HOME_DIFFERENT_WORLD".equals(sleepDebug);
+    }
+
+    static boolean sleepRetryWaiting(long worldTime, String sleepDebug) {
+        return FarmerRuntime.isBedtime(worldTime)
+                && ("BED_NAVIGATION_FAILED".equals(sleepDebug) || "RETRY_COOLDOWN".equals(sleepDebug));
     }
 
     private FarmerPhase phase(FarmerDefinition definition) {
@@ -186,9 +197,15 @@ final class ProfessionMonitor {
             if (center == null) return "chưa đặt " + zone.storageKey();
         }
         if (!npc.getEntity().getWorld().equals(center.getWorld())) return "NPC và khu làm việc khác world";
-        if (center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()
-                && npc.getEntity().getWorld().getNearbyPlayers(
-                        npc.getEntity().getLocation(), config.activationRange()).isEmpty()) {
+        boolean playerNearby = !center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()
+                || !npc.getEntity().getWorld().getNearbyPlayers(
+                        npc.getEntity().getLocation(), config.activationRange()).isEmpty();
+        if (!playerNearby && definition.activeRole() == ResidentRole.MINER) {
+            playerNearby = village.miningZones().stream().map(MiningZone::corner).map(StoredLocation::resolve)
+                    .filter(java.util.Objects::nonNull)
+                    .anyMatch(corner -> !corner.getWorld().getNearbyPlayers(corner, config.activationRange()).isEmpty());
+        }
+        if (!playerNearby) {
             return "không có người chơi gần NPC hoặc khu làm việc";
         }
         ResidentSchedule schedule = definition.schedule(
@@ -257,10 +274,17 @@ final class ProfessionMonitor {
         if (current.level() == ProfessionDiagnostic.Level.ERROR) {
             logger.warning("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=ERROR "
                     + prefix + current.message());
-        }
-        else if (previous != null && previous.level() == ProfessionDiagnostic.Level.ERROR) {
+        } else if (previous != null && previous.level() == ProfessionDiagnostic.Level.ERROR) {
             logger.info("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=RECOVERED "
                     + prefix + "đã phục hồi - " + current.message());
+        } else if (definition.activeRole() == ResidentRole.MINER
+                && current.level() == ProfessionDiagnostic.Level.WAITING) {
+            logger.info("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=WAITING "
+                    + prefix + current.message());
+        } else if (definition.activeRole() == ResidentRole.MINER
+                && previous != null && previous.level() == ProfessionDiagnostic.Level.WAITING) {
+            logger.info("NPC_DIAGNOSTIC uuid=" + definition.npcUuid() + " state=READY "
+                    + prefix + current.message());
         }
     }
 

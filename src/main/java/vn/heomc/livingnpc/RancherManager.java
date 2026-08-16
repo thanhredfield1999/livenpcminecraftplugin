@@ -68,11 +68,20 @@ final class RancherManager implements Listener {
     }
 
     void shutdown() {
-        runtimes.values().forEach(RancherRuntime::suspend);
+        RuntimeException failure = null;
+        for (RancherRuntime runtime : java.util.List.copyOf(runtimes.values())) {
+            try {
+                runtime.suspend();
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
         runtimes.clear();
         pendingCull.clear();
         nextRuntimeErrorLogTick.clear();
         workCoordinator.clear();
+        if (failure != null) throw failure;
     }
 
     String status(UUID npcUuid, LivingNpcConfig config) {
@@ -88,6 +97,11 @@ final class RancherManager implements Listener {
     boolean taskActive(UUID npcUuid) {
         RancherRuntime runtime = runtimes.get(npcUuid);
         return runtime != null && runtime.taskActive();
+    }
+
+    void observeGateOpened(UUID npcUuid, String gateKey) {
+        RancherRuntime runtime = runtimes.get(npcUuid);
+        if (runtime != null) runtime.observeGateOpened(gateKey);
     }
 
     @EventHandler

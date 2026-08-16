@@ -219,6 +219,30 @@ final class VillageStore {
         return false;
     }
 
+    boolean addNavigationGate(String id, Location location) {
+        VillageDefinition current = get(id);
+        if (current == null || location == null || location.getWorld() == null
+                || !current.center().world().equals(location.getWorld().getName())
+                || !(location.getBlock().getBlockData() instanceof org.bukkit.block.data.type.Gate)) return false;
+        VillageDefinition updated = current.withNavigationGate(StoredLocation.from(location.getBlock().getLocation()));
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
+    boolean removeNavigationGate(String id, int index) {
+        VillageDefinition current = get(id);
+        if (current == null) return false;
+        VillageDefinition updated = current.withoutNavigationGate(index);
+        if (updated == current) return false;
+        villages.put(current.id(), updated);
+        if (save()) return true;
+        villages.put(current.id(), current);
+        return false;
+    }
+
     boolean setMerchantPoint(String id, java.util.UUID merchantUuid, boolean seller, Location location) {
         VillageDefinition current = get(id);
         if (current == null || merchantUuid == null
@@ -363,6 +387,15 @@ final class VillageStore {
                 StoredLocation legacyRanch = workZones.get(VillageWorkZoneType.RANCH);
                 if (ranchPens.isEmpty() && legacyRanch != null) ranchPens.add(new RanchPen("ranch_1", legacyRanch));
                 workZones.remove(VillageWorkZoneType.RANCH);
+                java.util.ArrayList<StoredLocation> navigationGates = new java.util.ArrayList<>();
+                ConfigurationSection gateSection = section.getConfigurationSection("navigation-gates");
+                if (gateSection != null) for (String gateKey : gateSection.getKeys(false)) {
+                    StoredLocation gate = StoredLocation.load(gateSection.getConfigurationSection(gateKey));
+                    if (gate != null && center.world().equals(gate.world()) && navigationGates.size() < 32
+                            && navigationGates.stream().noneMatch(existing -> sameBlock(existing, gate))) {
+                        navigationGates.add(gate);
+                    }
+                }
                 java.util.ArrayList<MerchantStall> merchantStalls = new java.util.ArrayList<>();
                 ConfigurationSection stallSection = section.getConfigurationSection("merchant-stalls");
                 if (stallSection != null) {
@@ -388,7 +421,19 @@ final class VillageStore {
                     if (corner == null || storedMine == null || miningZones.size() >= 16) continue;
                     int minY = storedMine.getInt("min-y", (int) Math.floor(corner.y()) - 2);
                     int maxY = storedMine.getInt("max-y", (int) Math.floor(corner.y()) + 2);
-                    if (minY <= maxY) miningZones.add(new MiningZone(zoneId, corner, minY, maxY));
+                    if (!center.world().equals(corner.world()) || minY > maxY || maxY - minY > 4) {
+                        logger.warning("Bỏ qua Khu đào không hợp lệ " + zoneId + " của làng " + id);
+                        continue;
+                    }
+                    MiningZone mine = new MiningZone(zoneId, corner, minY, maxY);
+                    boolean overlaps = miningZones.stream().anyMatch(mine::overlaps)
+                            || villages.values().stream().flatMap(village -> village.miningZones().stream())
+                                    .anyMatch(mine::overlaps);
+                    if (overlaps) {
+                        logger.warning("Bỏ qua Khu đào chồng lấn " + zoneId + " của làng " + id);
+                    } else {
+                        miningZones.add(mine);
+                    }
                 }
                 java.util.ArrayList<ActivityPoint> activityPoints = new java.util.ArrayList<>();
                 ConfigurationSection activitySection = section.getConfigurationSection("activity-points");
@@ -428,6 +473,7 @@ final class VillageStore {
                         StoredLocation.load(section.getConfigurationSection("market-point")),
                         StoredLocation.load(section.getConfigurationSection("scenic-point")),
                         StoredLocation.load(section.getConfigurationSection("visitor-gate")),
+                        navigationGates,
                         section.getInt("ranch-animal-limit", 8),
                         workZones,
                         ranchPens,
@@ -462,6 +508,10 @@ final class VillageStore {
             }
             if (village.visitorGate() != null) {
                 village.visitorGate().save(section.createSection("visitor-gate"));
+            }
+            for (int index = 0; index < village.navigationGates().size(); index++) {
+                village.navigationGates().get(index).save(
+                        section.createSection("navigation-gates." + index));
             }
             section.set("ranch-animal-limit", village.ranchAnimalLimit());
             for (Map.Entry<VillageWorkZoneType, StoredLocation> zone : village.workZones().entrySet()) {

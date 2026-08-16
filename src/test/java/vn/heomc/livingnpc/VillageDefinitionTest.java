@@ -1,11 +1,16 @@
 package vn.heomc.livingnpc;
 
 import static org.junit.jupiter.api.Assertions.assertEquals;
+import static org.junit.jupiter.api.Assertions.assertThrows;
+import static org.mockito.Mockito.mock;
+import static org.mockito.Mockito.when;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 
 import org.junit.jupiter.api.Test;
+import java.util.List;
 import java.util.UUID;
+import org.bukkit.World;
 
 class VillageDefinitionTest {
     @Test
@@ -48,6 +53,25 @@ class VillageDefinitionTest {
         assertNull(village.visitorGate());
         assertEquals(gate, changed.visitorGate());
         assertEquals(center, changed.center());
+    }
+
+    @Test
+    void storesNavigationGatesSeparatelyFromVisitorGateWithoutDuplicateBlocks() {
+        StoredLocation center = new StoredLocation("StillCliff", 0, 64, 0, 0, 0);
+        StoredLocation visitorGate = new StoredLocation("StillCliff", 30, 64, 30, 0, 0);
+        StoredLocation first = new StoredLocation("StillCliff", 10, 64, 0, 0, 0);
+        StoredLocation duplicateBlock = new StoredLocation("StillCliff", 10.8, 64.4, 0.2, 90, 0);
+        StoredLocation second = new StoredLocation("StillCliff", 20, 64, 0, 0, 0);
+        VillageDefinition village = new VillageDefinition("village", "Village", center, null, null, null)
+                .withVisitorGate(visitorGate);
+
+        VillageDefinition changed = village.withNavigationGate(first)
+                .withNavigationGate(duplicateBlock).withNavigationGate(second);
+
+        assertTrue(village.navigationGates().isEmpty());
+        assertEquals(List.of(first, second), changed.navigationGates());
+        assertEquals(visitorGate, changed.visitorGate());
+        assertEquals(List.of(second), changed.withoutNavigationGate(0).navigationGates());
     }
 
     @Test
@@ -179,6 +203,31 @@ class VillageDefinitionTest {
         assertTrue(!first.contains("StillCliff", 12, 50, 11));
         assertEquals(changed, changed.withMiningZone(overlap));
         assertEquals(2, changed.withMiningZone(separate).miningZones().size());
+    }
+
+    @Test
+    void miningZoneRejectsMoreThanFiveVerticalLayers() {
+        StoredLocation corner = new StoredLocation("StillCliff", 10, 50, 10, 0, 0);
+
+        assertThrows(IllegalArgumentException.class,
+                () -> new MiningZone("mine_1", corner, 47, 52));
+    }
+
+    @Test
+    void miningZoneAtChunkBoundaryRequiresEveryFootprintChunkLoaded() {
+        MiningZone zone = new MiningZone(
+                "mine_1", new StoredLocation("StillCliff", 15, 50, 15, 0, 0), 48, 52);
+        World world = mock(World.class);
+        when(world.getName()).thenReturn("StillCliff");
+        when(world.isChunkLoaded(0, 0)).thenReturn(true);
+        when(world.isChunkLoaded(1, 0)).thenReturn(true);
+        when(world.isChunkLoaded(0, 1)).thenReturn(true);
+        when(world.isChunkLoaded(1, 1)).thenReturn(false);
+
+        assertTrue(!zone.chunksLoaded(world));
+
+        when(world.isChunkLoaded(1, 1)).thenReturn(true);
+        assertTrue(zone.chunksLoaded(world));
     }
 
     @Test
