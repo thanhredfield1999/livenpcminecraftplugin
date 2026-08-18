@@ -233,6 +233,10 @@ final class FarmerManager {
         return runtime == null ? null : runtime.phase();
     }
 
+    FarmerDefinition definition(UUID npcUuid) {
+        return definitions.get(npcUuid);
+    }
+
     void observeGateOpened(UUID npcUuid, String gateKey) {
         FarmerRuntime runtime = runtimes.get(npcUuid);
         if (runtime != null) runtime.observeGateOpened(gateKey);
@@ -288,10 +292,9 @@ final class FarmerManager {
         if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE) && plot.getWorld().hasStorm()) {
             return "Trời đang mưa";
         }
-        if (plot.getWorld().getNearbyPlayers(plot, config.activationRange()).isEmpty()
-                && npc.getEntity().getWorld().getNearbyPlayers(
-                        npc.getEntity().getLocation(), config.activationRange()).isEmpty()) {
-            return "Không có người chơi trong " + (int) config.activationRange() + " block quanh NPC hoặc ruộng";
+        if (!RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(plot, Math.min(definition.plotRadius(), config.maxPlotRadius()))) {
+            return "World hoặc chunk của NPC/khu ruộng chưa load";
         }
         FarmerRuntime runtime = runtimes.get(npcUuid);
         return "SẴN SÀNG - phase " + (runtime == null ? FarmerPhase.INACTIVE : runtime.phase());
@@ -343,17 +346,9 @@ final class FarmerManager {
             return !indoor && center.getWorld().hasStorm()
                     ? "Trời đang mưa" : "Ngoài ca " + definition.activeRole().storageKey();
         }
-        boolean playerNearby = !center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()
-                || !npc.getEntity().getWorld().getNearbyPlayers(
-                        npc.getEntity().getLocation(), config.activationRange()).isEmpty();
-        if (!playerNearby && definition.activeRole() == ResidentRole.MINER) {
-            playerNearby = village.miningZones().stream().map(MiningZone::corner).map(StoredLocation::resolve)
-                    .filter(java.util.Objects::nonNull)
-                    .anyMatch(corner -> !corner.getWorld().getNearbyPlayers(corner, config.activationRange()).isEmpty());
-        }
-        if (!playerNearby) {
-            return "Không có người chơi trong " + (int) config.activationRange()
-                    + " block quanh NPC, khu nghề hoặc Khu đào";
+        if (!RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(center, config.workZoneValidationRadius())) {
+            return "World hoặc chunk của NPC/khu nghề chưa load";
         }
         return "SẴN SÀNG - nghề " + definition.activeRole().storageKey();
     }
@@ -426,22 +421,9 @@ final class FarmerManager {
                 || !ReleasePolicy.roleEnabled(role)) {
             return false;
         }
-        VillageDefinition village = villageStore.get(current.villageId());
-        if (role == ResidentRole.RANCHER
-                && (village == null || village.workZone(VillageWorkZoneType.RANCH) == null)) return false;
-        if (role == ResidentRole.FISHER
-                && (village == null || village.workZone(VillageWorkZoneType.FISHING) == null)) return false;
-        VillageWorkZoneType civilZone = CivilProfessionRuntime.zoneFor(role);
-        if (civilZone != null && (village == null || village.workZone(civilZone) == null)) return false;
-        FarmerDefinition updated = current.withActiveRole(role);
-        if (role == ResidentRole.FARMER) {
-            EnumSet<BehaviorFlag> behaviors = updated.behaviors();
-            behaviors.add(BehaviorFlag.HARVEST);
-            behaviors.add(BehaviorFlag.PLANT);
-            updated = new FarmerDefinition(
-                    updated.npcUuid(), updated.villageId(), updated.home(), updated.plot(), updated.plotRadius(),
-                    updated.profile(), updated.activeRole(), updated.progress(), updated.schedules(), behaviors);
-        }
+        NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(uuid);
+        String residentName = npc == null ? current.profile().name() : npc.getName();
+        FarmerDefinition updated = current.changeProfession(residentName, role);
         return update(updated);
     }
 
@@ -647,6 +629,10 @@ final class FarmerManager {
     }
 
     private void bindLoadedNpcs() {
+        net.citizensnpcs.api.npc.NPCRegistry registry = registryOrNull();
+        if (registry == null) {
+            return;
+        }
         boolean migrated = false;
         for (FarmerDefinition loaded : List.copyOf(definitions.values())) {
             if (runtimes.containsKey(loaded.npcUuid())) {
@@ -659,7 +645,7 @@ final class FarmerManager {
                 definitions.put(definition.npcUuid(), definition);
                 migrated = true;
             }
-            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            NPC npc = registry.getByUniqueId(definition.npcUuid());
             if (npc == null) {
                 continue;
             }
@@ -717,6 +703,18 @@ final class FarmerManager {
                 amount -> awardExperience(npc.getUniqueId(), ResidentRole.FARMER, amount));
     }
 
+    /**
+     * Citizens chưa luôn publish implementation khi plugin đang enable. API hiện tại ném
+     * {@link IllegalStateException} thay vì trả {@code null}; runtime phải chờ tick sau.
+     */
+    private static net.citizensnpcs.api.npc.NPCRegistry registryOrNull() {
+        try {
+            return CitizensAPI.getNPCRegistry();
+        } catch (IllegalStateException unavailable) {
+            return null;
+        }
+    }
+
     static void configureWorkerNpc(NPC npc) {
         npc.setProtected(false);
         npc.data().remove("reset-pitch-on-tick");
@@ -732,7 +730,8 @@ final class FarmerManager {
         for (Map.Entry<UUID, FarmerRuntime> entry : runtimes.entrySet()) {
             UUID npcUuid = entry.getKey();
             FarmerDefinition current = definitions.get(npcUuid);
-            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(npcUuid);
+            net.citizensnpcs.api.npc.NPCRegistry registry = registryOrNull();
+            NPC npc = registry == null ? null : registry.getByUniqueId(npcUuid);
             if (current == null || npc == null || !npc.isSpawned()
                     || !current.enabled(BehaviorFlag.FOLLOW_SCHEDULE)) {
                 continue;
@@ -746,7 +745,7 @@ final class FarmerManager {
             if (current.activeRole() == ResidentRole.FARMER) {
                 entry.getValue().finishFarmerShift(config);
             }
-            FarmerDefinition updated = current.withActiveRole(selected);
+            FarmerDefinition updated = current.changeProfession(npc.getName(), selected);
             previous.put(npcUuid, current);
             definitions.put(npcUuid, updated);
             entry.getValue().updateDefinition(updated);

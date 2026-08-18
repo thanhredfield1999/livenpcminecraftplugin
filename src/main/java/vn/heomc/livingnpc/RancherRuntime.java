@@ -89,7 +89,9 @@ final class RancherRuntime {
         StoredLocation storedZone = activePen != null ? activePen
                 : village == null || village.ranchPens().isEmpty() ? null : selectPen(village, config);
         Location zone = storedZone == null ? null : storedZone.resolve();
-        if (zone == null || !npc.getEntity().getWorld().equals(zone.getWorld()) || !activeNear(zone, config)) {
+        if (zone == null || !npc.getEntity().getWorld().equals(zone.getWorld())
+                || !RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(zone, config.workZoneValidationRadius())) {
             suspend();
             return;
         }
@@ -197,8 +199,9 @@ final class RancherRuntime {
         Location zone = storedZone == null ? null : storedZone.resolve();
         if (zone == null) return "Chưa đặt Khu chăn nuôi";
         if (!npc.getEntity().getWorld().equals(zone.getWorld())) return "NPC và Khu chăn nuôi khác world";
-        if (zone.getWorld().getNearbyPlayers(zone, config.activationRange()).isEmpty()) {
-            return "Không có người chơi trong " + (int) config.activationRange() + " block";
+        if (!RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(zone, config.workZoneValidationRadius())) {
+            return "World hoặc chunk của NPC/Khu chăn nuôi chưa load";
         }
         ResidentSchedule schedule = definition.schedule(
                 ResidentRole.RANCHER, new ResidentSchedule(config.workStartTick(), config.workEndTick()));
@@ -407,10 +410,10 @@ final class RancherRuntime {
             return false;
         }
         VillageDefinition configuredVillage = villages.get(definition.villageId());
-        List<StoredLocation> configuredGates = configuredVillage == null
+        List<NavigationGate> configuredGates = configuredVillage == null
                 ? List.of() : configuredVillage.navigationGates();
         List<GateRoute.Candidate> gates = GateRouteDiscovery.discover(
-                current, target, configuredGates);
+                current, target, configuredGates, definition.activeRole());
         if (!gates.isEmpty()) {
             net.citizensnpcs.api.ai.Navigator gateNavigator = npc.getNavigator();
             LivingNavigation.allowDoors(gateNavigator.getLocalParameters())
@@ -431,8 +434,15 @@ final class RancherRuntime {
                                 margin, margin);
                         return false;
                     }
+                    gateNavigator.setTarget(legTarget);
                     net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
                             .activeParametersAfterTarget(gateNavigator, legTarget, margin);
+                    LivingNavigation.allowDoors(activeParameters)
+                            .speedModifier(config.navigationSpeedModifier())
+                            .distanceMargin(margin)
+                            .pathDistanceMargin(margin)
+                            .destinationTeleportMargin(0.0)
+                            .stuckAction((stuckNpc, stuckNavigator) -> false);
                     NavigationDiagnostics.shared().attach(
                             npc, activeParameters, "RANCH_ENTER_GATE", legTarget,
                             margin, margin);
@@ -447,6 +457,16 @@ final class RancherRuntime {
                 @Override
                 public void cancel() {
                     if (gateNavigator.isNavigating()) gateNavigator.cancelNavigation();
+                }
+
+                @Override
+                public boolean requestGate(String gateKey) {
+                    return GatePassageService.request(npc, gateKey);
+                }
+
+                @Override
+                public void releaseGate(String gateKey) {
+                    GatePassageService.release(npc, gateKey);
                 }
             }, config.navigationTimeoutTicks(), config.navigationDistanceMargin(), 1.0);
             workEntryTarget = target;
@@ -528,6 +548,7 @@ final class RancherRuntime {
             NavigationDiagnostics.shared().targetOutOfRange(npc, parameters, operation, target, margin, margin);
             return false;
         }
+        navigator.setTarget(target);
         net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
                 .activeParametersAfterTarget(navigator, target, margin);
         NavigationDiagnostics.shared().attach(npc, activeParameters, operation, target, margin, margin);
@@ -626,6 +647,13 @@ final class RancherRuntime {
         if (targetUuid.equals(navigationTarget) && npc.getNavigator().isNavigating()
                 && serverTick - navigationStartedTick < config.navigationTimeoutTicks()) return false;
         if (targetUuid.equals(navigationTarget)) {
+            NavigationRecovery.Result recovery = NavigationRecovery.recover(
+                    npc, target, 2, serverTick, "RANCH_APPROACH", config.navigationRetryBackoffTicks());
+            if (recovery == NavigationRecovery.Result.RECOVERED) {
+                navigationTarget = null;
+                navigationFailure = null;
+                return true;
+            }
             navigationTarget = null;
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             return false;
@@ -851,7 +879,7 @@ final class RancherRuntime {
             StoredLocation candidate = pens.get(index).center();
             Location location = candidate.resolve();
             if (location == null || !npc.getEntity().getWorld().equals(location.getWorld())
-                    || !activeNear(location, config)
+                    || !RuntimeChunkAvailability.loadedArea(location, config.workZoneValidationRadius())
                     || !WorkZoneValidator.validate(
                             location, VillageWorkZoneType.RANCH,
                             config.workZoneValidationRadius(), config.workZoneValidationVerticalRange()).valid()
@@ -864,11 +892,6 @@ final class RancherRuntime {
         return null;
     }
 
-    private boolean activeNear(Location zone, LivingNpcConfig config) {
-        Location current = npc.getEntity().getLocation();
-        return !zone.getWorld().getNearbyPlayers(zone, config.activationRange()).isEmpty()
-                || !current.getWorld().getNearbyPlayers(current, config.activationRange()).isEmpty();
-    }
 
     private boolean canReachPen(Location center, int offset, LivingNpcConfig config) {
         Location current = npc.getEntity().getLocation();

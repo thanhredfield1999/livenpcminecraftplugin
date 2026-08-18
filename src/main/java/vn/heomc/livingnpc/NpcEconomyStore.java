@@ -132,6 +132,30 @@ final class NpcEconomyStore {
         return List.copyOf(result);
     }
 
+    long totalEarnedMinor(UUID accountUuid) {
+        return journalTotal(accountUuid, "SALE") + journalTotal(accountUuid, "VISITOR_SALE");
+    }
+
+    long totalSpentMinor(UUID accountUuid) {
+        return journalTotal(accountUuid, "EXPENSE");
+    }
+
+    private long journalTotal(UUID accountUuid, String type) {
+        long total = 0L;
+        for (Map<String, Object> entry : journal) {
+            if (!type.equals(entry.get("type")) || !String.valueOf(accountUuid).equals(entry.get("npc"))) continue;
+            Object raw = entry.get("total-minor");
+            if (!(raw instanceof Number number) || number.longValue() <= 0L) continue;
+            total = saturatedAdd(total, number.longValue());
+        }
+        return total;
+    }
+
+    private static long saturatedAdd(long left, long right) {
+        if (right <= 0L || Long.MAX_VALUE - left < right) return Long.MAX_VALUE;
+        return left + right;
+    }
+
     NpcActivity latestActivity(UUID npcUuid) {
         for (int index = journal.size() - 1; index >= 0; index--) {
             Map<String, Object> entry = journal.get(index);
@@ -182,6 +206,7 @@ final class NpcEconomyStore {
         yaml.set("journal", journal);
 
         File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
+        long startNanos = System.nanoTime();
         try {
             yaml.save(temporary);
             try {
@@ -189,6 +214,7 @@ final class NpcEconomyStore {
             } catch (java.nio.file.AtomicMoveNotSupportedException exception) {
                 Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
+            SaveTelemetry.record(logger, "economy.yml", startNanos, file.length());
             return true;
         } catch (IOException exception) {
             logger.severe("Could not save NPC economy: " + exception.getMessage());

@@ -55,6 +55,18 @@ class FarmerNavigationPolicyTest {
     }
 
     @Test
+    void rejectsNegativeOrNonFiniteArrivalMargin() {
+        World world = mock(World.class);
+        Location current = new Location(world, 0.0, 0.0, 0.0);
+        Location target = new Location(world, 0.0, 0.0, 0.0);
+
+        assertFalse(FarmerRuntime.navigationTargetReached(current, target, -1.0));
+        assertFalse(FarmerRuntime.navigationTargetReached(current, target, Double.NaN));
+        assertFalse(FarmerRuntime.navigationTargetReached(
+                current, target, Double.POSITIVE_INFINITY));
+    }
+
+    @Test
     void outsidePlotFarmerMustReenterBeforeSelectingCrops() {
         World world = mock(World.class);
         Location plot = new Location(world, 74, -60, -5);

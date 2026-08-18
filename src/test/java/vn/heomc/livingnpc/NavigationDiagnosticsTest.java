@@ -54,7 +54,6 @@ class NavigationDiagnosticsTest {
         assertEquals(active, diagnostics.activeParametersAfterTarget(navigator, target, 0.75));
 
         var ordered = inOrder(navigator, active);
-        ordered.verify(navigator).setTarget(target);
         ordered.verify(navigator).getLocalParameters();
         ordered.verify(active).distanceMargin(0.75);
         ordered.verify(active).pathDistanceMargin(0.75);

@@ -21,12 +21,21 @@ final class GateRoutePlan {
     GateRoute next() {
         if (current != null) return current;
         if (nextCandidateIndex >= candidates.size()) return null;
-        current = new GateRoute(candidates.get(nextCandidateIndex++), finalTarget);
+        int candidateIndex = nextCandidateIndex++;
+        Location routeTarget = candidateIndex + 1 < candidates.size()
+                ? candidates.get(candidateIndex + 1).approach()
+                : finalTarget;
+        current = new GateRoute(candidates.get(candidateIndex), routeTarget);
         attemptedCount++;
         return current;
     }
 
     GateRoute failCurrentAndNext() {
+        current = null;
+        return next();
+    }
+
+    GateRoute completeCurrentAndNext() {
         current = null;
         return next();
     }

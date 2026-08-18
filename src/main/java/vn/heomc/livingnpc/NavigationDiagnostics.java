@@ -20,14 +20,28 @@ final class NavigationDiagnostics {
     private static NavigationDiagnostics shared = new NavigationDiagnostics(Logger.getLogger("LivingNPC"));
 
     private final Logger logger;
+    private final NpcTelemetryCollector telemetry;
     private final Map<LogKey, Long> nextLogTick = new HashMap<>();
 
     NavigationDiagnostics(Logger logger) {
+        this(logger, new NpcTelemetryCollector(new NpcTelemetryBuffer(512)));
+    }
+
+    NavigationDiagnostics(Logger logger, NpcEconomy economy) {
+        this(logger, new NpcTelemetryCollector(new NpcTelemetryBuffer(512), economy));
+    }
+
+    NavigationDiagnostics(Logger logger, NpcTelemetryCollector telemetry) {
         this.logger = logger;
+        this.telemetry = telemetry;
     }
 
     static void initialize(Logger logger) {
         shared = new NavigationDiagnostics(logger);
+    }
+
+    static void initialize(Logger logger, NpcEconomy economy) {
+        shared = new NavigationDiagnostics(logger, economy);
     }
 
     static NavigationDiagnostics shared() {
@@ -36,7 +50,6 @@ final class NavigationDiagnostics {
 
     NavigatorParameters activeParametersAfterTarget(
             Navigator navigator, Location target, double distanceMargin) {
-        navigator.setTarget(target);
         return navigator.getLocalParameters()
                 .distanceMargin(distanceMargin)
                 .pathDistanceMargin(distanceMargin);
@@ -44,6 +57,15 @@ final class NavigationDiagnostics {
 
     void logFisherHook(String message) {
         logger.info(message);
+    }
+
+    void recordNavigationRecovery(NPC npc, String operation, String reason, Location target, long elapsedTicks) {
+        if (npc == null || !npc.isSpawned()) return;
+        Navigator navigator = npc.getNavigator();
+        telemetry.recordNavigationEnd(
+                npc.getUniqueId(), npc.getName(), "unknown", operation, reason,
+                npc.getEntity().getLocation(), target, navigator.getTargetAsLocation(),
+                0.0, 0.0, navigator.getLocalParameters(), navigator.getPathStrategy(), elapsedTicks);
     }
 
     boolean targetInRange(Location current, Location target, float range) {
@@ -66,6 +88,29 @@ final class NavigationDiagnostics {
             NPC npc, NavigatorParameters parameters, String operation, Location target,
             double distanceMargin, double pathMargin) {
         log(npc, operation, "TARGET_OUT_OF_RANGE", target, distanceMargin, pathMargin, parameters, 0L);
+    }
+
+    void recordAction(
+            FarmerDefinition definition, VillageDefinition village, String npcName, FarmerPhase phase,
+            Location current, Location target, boolean navigating, String strategy, String path,
+            long serverTick) {
+        recordAction(definition, village, npcName, phase, current, target, navigating, strategy, path, serverTick, null);
+    }
+
+    void recordAction(
+            FarmerDefinition definition, VillageDefinition village, String npcName, FarmerPhase phase,
+            Location current, Location target, boolean navigating, String strategy, String path,
+            long serverTick, String skinName) {
+        telemetry.recordAction(
+                definition, village, npcName, phase, current, target, navigating, strategy, path, serverTick, skinName);
+    }
+
+    String snapshotJson() {
+        return NpcTelemetryJson.toJson(telemetry.snapshot());
+    }
+
+    NpcTelemetrySnapshot snapshot() {
+        return telemetry.snapshot();
     }
 
     static String reasonName(CancelReason reason) {
@@ -146,6 +191,9 @@ final class NavigationDiagnostics {
         Navigator navigator = npc.getNavigator();
         Location citizensTarget = navigator.getTargetAsLocation();
         PathStrategy pathStrategy = navigator.getPathStrategy();
+        telemetry.recordNavigationEnd(
+                npc.getUniqueId(), npc.getName(), "unknown", operation, reason, current, target,
+                citizensTarget, distanceMargin, pathMargin, parameters, pathStrategy, elapsedTicks);
         logger.info(structuredMessage(
                 npc.getUniqueId(), operation, reason, current, target, citizensTarget,
                 distanceMargin, pathMargin, parameters.pathfinderType().name(), parameters.range(),
@@ -168,7 +216,7 @@ final class NavigationDiagnostics {
         }
     }
 
-    private static String examinerNames(NavigatorParameters parameters) {
+    static String examinerNames(NavigatorParameters parameters) {
         return Arrays.stream(parameters.examiners())
                 .map(examiner -> examiner.getClass().getSimpleName())
                 .sorted()

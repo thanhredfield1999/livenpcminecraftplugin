@@ -105,6 +105,22 @@ record FarmerDefinition(
                 updatedRole, updatedProgress, schedules, behaviors);
     }
 
+    FarmerDefinition resetToOrdinaryResident(String residentName) {
+        ResidentProfile resident = ResidentProfile.adopted(residentName);
+        return new FarmerDefinition(
+                npcUuid, null, home, null, 4, resident, ResidentRole.RESIDENT,
+                Map.of(ResidentRole.RESIDENT, new RoleProgress(0L)),
+                Map.of(), BehaviorFlag.safeDefaults());
+    }
+
+    FarmerDefinition changeProfession(String residentName, ResidentRole role) {
+        if (role == null) {
+            throw new IllegalArgumentException("Nghề mới không được null");
+        }
+        FarmerDefinition reset = resetToOrdinaryResident(residentName);
+        return role == ResidentRole.RESIDENT ? reset : reset.withActiveRole(role);
+    }
+
     FarmerDefinition withSchedule(ResidentRole role, ResidentSchedule updated) {
         java.util.EnumMap<ResidentRole, ResidentSchedule> values = new java.util.EnumMap<>(ResidentRole.class);
         values.putAll(schedules);

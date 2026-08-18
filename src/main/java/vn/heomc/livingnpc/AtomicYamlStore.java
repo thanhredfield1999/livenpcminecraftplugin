@@ -14,6 +14,7 @@ final class AtomicYamlStore {
 
     static boolean save(YamlConfiguration yaml, File file, Logger logger, String description) {
         File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
+        long startNanos = System.nanoTime();
         try {
             yaml.save(temporary);
             try {
@@ -22,6 +23,7 @@ final class AtomicYamlStore {
             } catch (AtomicMoveNotSupportedException exception) {
                 Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
+            SaveTelemetry.record(logger, description, startNanos, file.length());
             return true;
         } catch (IOException exception) {
             logger.severe("Could not save " + description + ": " + exception.getMessage());

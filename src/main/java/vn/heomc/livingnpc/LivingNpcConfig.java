@@ -43,7 +43,9 @@ record LivingNpcConfig(
         ResidentPatrolSettings residentPatrol,
         SeatingSettings seating,
         NeedsSettings needs,
-        SeasonEightSettings seasonEight) {
+        SeasonEightSettings seasonEight,
+        TelemetryExportSettings telemetryExport,
+        vn.heomc.livingnpc.bluemap.BlueMapSettings blueMapMarkers) {
 
     static LivingNpcConfig load(FileConfiguration config) {
         int minDelay = Math.max(1, config.getInt("action-delay-min-ticks", 20));
@@ -132,7 +134,9 @@ record LivingNpcConfig(
                 loadNeeds(config),
                 new SeasonEightSettings(
                         config.getBoolean("season-8.enabled", false),
-                        Math.clamp(config.getInt("season-8.max-batch", 4), 1, 16)));
+                        Math.clamp(config.getInt("season-8.max-batch", 4), 1, 16)),
+                loadTelemetryExport(config),
+                vn.heomc.livingnpc.bluemap.BlueMapSettings.load(config));
     }
 
     private static VisitorSettings loadVisitors(FileConfiguration config) {
@@ -212,11 +216,11 @@ record LivingNpcConfig(
       }
 
     private static SeatingSettings loadSeating(FileConfiguration config) {
-        long minimum = Math.max(40L, config.getLong("seating.rest-duration-min-ticks", 100L));
+        long minimum = Math.max(600L, config.getLong("seating.rest-duration-min-ticks", 600L));
         return new SeatingSettings(
                 config.getBoolean("seating.enabled", true),
                 minimum,
-                Math.max(minimum, config.getLong("seating.rest-duration-max-ticks", 240L)),
+                Math.max(minimum, config.getLong("seating.rest-duration-max-ticks", 1200L)),
                 Math.clamp(config.getLong("seating.stand-duration-ticks", 8L), 1L, 40L));
     }
 
@@ -227,5 +231,14 @@ record LivingNpcConfig(
                 Math.max(20L, config.getLong("needs.thirst-decay-ticks-per-point", 800L)),
                 Math.clamp(config.getLong("needs.max-managed-delta-ticks", 1200L), 20L, 24_000L),
                 Math.max(200L, config.getLong("needs.save-interval-ticks", 1200L)));
+    }
+
+    private static TelemetryExportSettings loadTelemetryExport(FileConfiguration config) {
+        return new TelemetryExportSettings(
+                config.getBoolean("telemetry.export.enabled", false),
+                config.getString("telemetry.export.file", "telemetry/latest.json"),
+                Math.max(20L, config.getLong("telemetry.export.interval-ticks", 100L)),
+                config.getBoolean("telemetry.economy.enabled", false),
+                config.getBoolean("telemetry.visitors.enabled", false));
     }
 }

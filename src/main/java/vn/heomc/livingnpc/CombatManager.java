@@ -328,11 +328,7 @@ final class CombatManager implements Listener {
 
     private void navigate(NPC npc, Location target, double margin) {
         if (!npc.getEntity().getWorld().equals(target.getWorld())) return;
-        Navigator navigator = npc.getNavigator();
-        if (navigator.isNavigating() && navigator.getTargetAsLocation() != null
-                && navigator.getTargetAsLocation().distanceSquared(target) < 4.0) return;
-        navigator.setTarget(target);
-        navigator.getLocalParameters().speedModifier(1.0f).distanceMargin(margin).pathDistanceMargin(margin);
+        MovementService.startSimpleNavigation(npc.getNavigator(), target, 1.0f, margin);
     }
 
     private void cancelNavigation(NPC npc) {

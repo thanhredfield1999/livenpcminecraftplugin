@@ -55,6 +55,17 @@ final class VisitorRuntime {
         return demand.visitId();
     }
 
+    NpcTelemetryVisitor telemetrySnapshot() {
+        Location target = phase == VisitorPhase.GOING_TO_GATE ? gate : market;
+        List<NpcTelemetryInventoryItem> requested = demand.demand().entrySet().stream()
+                .sorted(java.util.Map.Entry.comparingByKey())
+                .map(entry -> new NpcTelemetryInventoryItem(entry.getKey(), entry.getValue()))
+                .toList();
+        return new NpcTelemetryVisitor(
+                uuid(), npc.getName(), villageId, role().storageKey(), phase.name(), demand.walletMinor(),
+                requested, NpcTelemetryPosition.from(target), null);
+    }
+
     boolean tick(long serverTick, LivingNpcConfig config, NpcEconomy economy, MerchantManager merchants) {
         if (!npc.isSpawned() || serverTick >= expiresAtTick) return false;
         tickFormation(serverTick, config);
@@ -86,7 +97,14 @@ final class VisitorRuntime {
         }
         if (serverTick - navigationStartedTick >= config.navigationTimeoutTicks()
                 || !npc.getNavigator().isNavigating()) {
-            return false;
+            NavigationRecovery.Result recovery = NavigationRecovery.recover(
+                    npc, target, 2, serverTick, phase.name(), config.navigationRetryBackoffTicks());
+            if (recovery == NavigationRecovery.Result.RECOVERED) {
+                if (phase == VisitorPhase.GOING_TO_GATE) return false;
+                phase = VisitorPhase.SHOPPING;
+                nextActionTick = serverTick + config.visitors().shoppingDurationTicks();
+            }
+            return true;
         }
         return true;
     }
@@ -112,27 +130,18 @@ final class VisitorRuntime {
             if (!member.isSpawned() || !member.getEntity().getWorld().equals(leader.getWorld())) continue;
             Location target = leader.clone().add(direction.clone().multiply(index + 1));
             if (member.getEntity().getLocation().distanceSquared(target) < 2.25) continue;
-            Navigator navigator = member.getNavigator();
-            LivingNavigation.allowDoors(navigator.getLocalParameters())
-                    .speedModifier(config.navigationSpeedModifier())
-                    .distanceMargin(1.25)
-                    .pathDistanceMargin(1.25)
-                    .destinationTeleportMargin(0.0)
-                    .stuckAction((stuckNpc, stuckNavigator) -> false);
-            navigator.setTarget(target);
+            MovementService.startSimpleNavigation(
+                    member.getNavigator(), target, config.navigationSpeedModifier(), 1.25);
         }
     }
 
     private void navigate(Location target, long serverTick, LivingNpcConfig config) {
         Navigator navigator = npc.getNavigator();
         navigator.cancelNavigation();
-        LivingNavigation.allowDoors(navigator.getLocalParameters())
-                .speedModifier(config.navigationSpeedModifier())
-                .distanceMargin(config.navigationDistanceMargin())
-                .pathDistanceMargin(config.navigationDistanceMargin())
-                .destinationTeleportMargin(0.0)
-                .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        if (!MovementService.startSimpleNavigation(
+                navigator, target, config.navigationSpeedModifier(), config.navigationDistanceMargin())) {
+            return;
+        }
         navigationStartedTick = serverTick;
     }
 }

@@ -49,6 +49,13 @@ final class VisitorManager {
         return (int) active.values().stream().filter(visitor -> visitor.villageId().equals(villageId)).count();
     }
 
+    NpcTelemetryVisitors telemetrySnapshot(VisitorSettings settings) {
+        return new NpcTelemetryVisitors(
+                settings.enabled(), settings.maxActive(), active.size(),
+                active.values().stream().limit(NpcTelemetryVisitors.MAX_ACTIVE)
+                        .map(VisitorRuntime::telemetrySnapshot).toList());
+    }
+
     void shutdown() {
         for (VisitorRuntime visitor : active.values()) {
             visitor.destroy();

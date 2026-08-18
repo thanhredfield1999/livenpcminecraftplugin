@@ -75,7 +75,8 @@ final class FisherRuntime {
         StoredLocation stored = village == null ? null : village.workZone(VillageWorkZoneType.FISHING);
         Location center = stored == null ? null : stored.resolve();
         if (center == null || !npc.getEntity().getWorld().equals(center.getWorld())
-                || center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()) {
+                || !RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(center, config.fisher().waterSearchRadius() + 3)) {
             suspend();
             return;
         }
@@ -282,7 +283,21 @@ final class FisherRuntime {
                     navigationLeases, npc.getUniqueId(), npc.getNavigator());
         } else if (!npc.getNavigator().isNavigating()
                 || serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
-            if (standingTarget != null) failedStandingTargets.add(targetKey(standingTarget));
+            if (standingTarget != null) {
+                NavigationRecovery.Result recovery = NavigationRecovery.recover(
+                        npc, standingTarget, 2, serverTick, "GOING_TO_FISHING_SPOT",
+                        config.navigationRetryBackoffTicks());
+                if (recovery == NavigationRecovery.Result.RECOVERED) {
+                    holdRod();
+                    failedStandingTargets.clear();
+                    faceWater();
+                    phase = FarmerPhase.CASTING_LINE;
+                    nextActionTick = serverTick + 20L;
+                    cancelAndReleaseNavigation(navigationLeases, npc.getUniqueId(), npc.getNavigator());
+                    return;
+                }
+                failedStandingTargets.add(targetKey(standingTarget));
+            }
             teardownWorkState(
                     true, FarmerPhase.RESTING,
                     serverTick + config.navigationRetryBackoffTicks(), false);
@@ -312,13 +327,8 @@ final class FisherRuntime {
     }
 
     static void startNavigation(Navigator navigator, Location target, float speedModifier) {
-        navigator.setTarget(target);
-        LivingNavigation.allowDoors(navigator.getLocalParameters())
-                .speedModifier(speedModifier)
-                .distanceMargin(PRECISE_APPROACH_MARGIN)
-                .pathDistanceMargin(PRECISE_APPROACH_MARGIN)
-                .destinationTeleportMargin(0.0)
-                .stuckAction((stuckNpc, stuckNavigator) -> false);
+        MovementService.startSimpleNavigation(
+                navigator, target, speedModifier, PRECISE_APPROACH_MARGIN);
     }
 
     static void cancelAndReleaseNavigation(

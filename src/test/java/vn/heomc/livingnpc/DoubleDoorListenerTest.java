@@ -143,6 +143,17 @@ class DoubleDoorListenerTest {
     }
 
     @Test
+    void approachAcceptsCitizensBlockGoalInsteadOfRestartingPassage() {
+        World world = mock(World.class);
+        Location approach = new Location(world, -18.5, -60.0, -67.5);
+
+        assertEquals(
+                DoubleDoorListener.PassageTargetState.REACHED,
+                DoubleDoorListener.passageTargetState(
+                        new Location(world, -19.0, -60.0, -68.0), null, approach));
+    }
+
+    @Test
     void anotherOwnersTargetWinsEvenWhenNpcHasReachedDoorTarget() {
         World world = mock(World.class);
         Location approach = new Location(world, -18.5, -60.0, -67.5);

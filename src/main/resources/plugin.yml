@@ -3,7 +3,7 @@ version: '${version}'
 main: vn.heomc.livingnpc.LivingNpcPlugin
 api-version: '1.21'
 depend: [Citizens]
-softdepend: [WorldGuard]
+softdepend: [WorldGuard, BlueMap]
 authors: [HeoMC]
 description: Cư dân làng sinh hoạt theo lịch, sử dụng Citizens.
 commands:

@@ -27,9 +27,11 @@ final class RancherManager implements Listener {
     }
 
     void tick(long serverTick, LivingNpcConfig config) {
+        net.citizensnpcs.api.npc.NPCRegistry registry = registryOrNull();
+        if (registry == null) return;
         java.util.Collection<FarmerDefinition> definitions = residents.definitions();
         java.util.Set<UUID> current = definitions.stream().map(FarmerDefinition::npcUuid)
-                .filter(uuid -> CitizensAPI.getNPCRegistry().getByUniqueId(uuid) != null)
+                .filter(uuid -> registry.getByUniqueId(uuid) != null)
                 .collect(java.util.stream.Collectors.toSet());
         runtimes.entrySet().removeIf(entry -> {
             if (current.contains(entry.getKey())) return false;
@@ -37,7 +39,7 @@ final class RancherManager implements Listener {
             return true;
         });
         for (FarmerDefinition definition : definitions) {
-            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            NPC npc = registry.getByUniqueId(definition.npcUuid());
             if (npc == null) continue;
             RancherRuntime runtime = runtimes.computeIfAbsent(
                     definition.npcUuid(), ignored -> new RancherRuntime(
@@ -121,5 +123,17 @@ final class RancherManager implements Listener {
     }
 
     private record CullOwner(UUID npcUuid, String villageId) {
+    }
+
+    /**
+     * Citizens chưa luôn publish implementation khi plugin đang enable. API hiện tại ném
+     * {@link IllegalStateException} thay vì trả {@code null}; runtime phải chờ tick sau.
+     */
+    private static net.citizensnpcs.api.npc.NPCRegistry registryOrNull() {
+        try {
+            return CitizensAPI.getNPCRegistry();
+        } catch (IllegalStateException unavailable) {
+            return null;
+        }
     }
 }

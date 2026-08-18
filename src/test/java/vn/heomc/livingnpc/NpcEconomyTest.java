@@ -202,18 +202,21 @@ class NpcEconomyTest {
     }
 
     @Test
-    void carriedLootUsesTwoMinecraftStacksAndDepositsAtomically() throws IOException {
+    void carriedLootUsesFiveSlotsAndDepositsAtomically() throws IOException {
         NpcEconomy economy = economy(512, 32);
         UUID rancher = UUID.randomUUID();
 
-        assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("egg", 64)));
+        assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("egg", 5)));
         assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("feather", 2)));
+        assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("chicken", 1)));
+        assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("wheat", 5)));
+        assertTrue(economy.addCarriedLoot(rancher, java.util.Map.of("cod", 5)));
         assertTrue(economy.carriedInventoryFull(rancher));
-        assertFalse(economy.addCarriedLoot(rancher, java.util.Map.of("chicken", 1)));
+        assertFalse(economy.addCarriedLoot(rancher, java.util.Map.of("salmon", 1)));
 
         assertTrue(economy.depositCarriedLoot(rancher, "village"));
         assertEquals(0, economy.account(rancher).inventorySize());
-        assertEquals(64, economy.villageAccount("village").quantity("egg"));
+        assertEquals(5, economy.villageAccount("village").quantity("egg"));
         assertEquals(2, economy.villageAccount("village").quantity("feather"));
     }
 

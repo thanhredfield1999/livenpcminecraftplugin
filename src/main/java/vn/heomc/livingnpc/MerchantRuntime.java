@@ -1,7 +1,7 @@
 package vn.heomc.livingnpc;
 
-import java.util.Collection;
 import java.util.UUID;
+import java.util.Collection;
 import net.citizensnpcs.api.npc.NPC;
 import net.citizensnpcs.api.ai.Navigator;
 import org.bukkit.Location;
@@ -77,7 +77,13 @@ final class MerchantRuntime {
         } else if (phase != FarmerPhase.GOING_TO_STALL) {
             navigate(seller, FarmerPhase.GOING_TO_STALL, serverTick, config);
         } else if (serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
-            suspend();
+            NavigationRecovery.Result recovery = NavigationRecovery.recover(
+                    npc, seller, 2, serverTick, "GOING_TO_STALL", config.navigationRetryBackoffTicks());
+            if (recovery == NavigationRecovery.Result.RECOVERED) {
+                npc.getEntity().setRotation(stall.sellerPoint().yaw(), 0.0f);
+                open = true;
+                phase = FarmerPhase.SERVING;
+            }
         }
     }
 
@@ -89,6 +95,7 @@ final class MerchantRuntime {
 
     void releaseForSleep() {
         open = false;
+        if (npc.isSpawned() && npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
         phase = FarmerPhase.INACTIVE;
     }
 
@@ -109,20 +116,18 @@ final class MerchantRuntime {
         } else if (phase != FarmerPhase.GOING_HOME) {
             navigate(home, FarmerPhase.GOING_HOME, serverTick, config);
         } else if (serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
-            suspend();
+            NavigationRecovery.recover(
+                    npc, home, 2, serverTick, "GOING_HOME", config.navigationRetryBackoffTicks());
         }
     }
 
     private void navigate(Location target, FarmerPhase nextPhase, long serverTick, LivingNpcConfig config) {
         Navigator navigator = npc.getNavigator();
         navigator.cancelNavigation();
-        LivingNavigation.allowDoors(navigator.getLocalParameters())
-                .speedModifier(config.navigationSpeedModifier())
-                .distanceMargin(config.navigationDistanceMargin())
-                .pathDistanceMargin(config.navigationDistanceMargin())
-                .destinationTeleportMargin(0.0)
-                .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        if (!MovementService.startSimpleNavigation(
+                navigator, target, config.navigationSpeedModifier(), config.navigationDistanceMargin())) {
+            return;
+        }
         navigationStartedTick = serverTick;
         phase = nextPhase;
     }

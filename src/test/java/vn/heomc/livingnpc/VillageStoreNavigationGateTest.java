@@ -30,14 +30,14 @@ class VillageStoreNavigationGateTest {
         VillageStore store = new VillageStore(temporaryDirectory.toFile(), Logger.getAnonymousLogger());
 
         assertEquals(2, store.get("test").navigationGates().size());
-        assertEquals(10, store.get("test").navigationGates().getFirst().x());
-        assertEquals(30, store.get("test").navigationGates().getLast().x());
+        assertEquals(10, store.get("test").navigationGates().getFirst().location().x());
+        assertEquals(30, store.get("test").navigationGates().getLast().location().x());
 
         store.removeNavigationGate("test", 0);
         VillageStore reloaded = new VillageStore(temporaryDirectory.toFile(), Logger.getAnonymousLogger());
 
         assertEquals(1, reloaded.get("test").navigationGates().size());
-        assertEquals(30, reloaded.get("test").navigationGates().getFirst().x());
+        assertEquals(30, reloaded.get("test").navigationGates().getFirst().location().x());
     }
 
     private static void location(

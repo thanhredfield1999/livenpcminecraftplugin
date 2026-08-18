@@ -57,32 +57,7 @@ class VillageRouteExaminerTest {
         assertTrue(VillageRouteExaminer.isUnsupportedEdge(edge, pointAt(0, 1, 0)));
     }
 
-    @Test
-    void removesUnsupportedEdgeNodesFromCitizensNeighbours() {
-        BlockSource source = flatSource(Material.DIRT_PATH);
-        PathPoint safe = pointAt(0, 1, 0);
-        PathPoint edge = pointAt(2, 1, 0);
-        when(source.getMaterialAt(2, 0, 0)).thenReturn(Material.AIR);
-        VectorNode current = mock(VectorNode.class);
-        when(current.getNeighbours(source, current, true)).thenReturn(java.util.List.of(safe, edge));
 
-        java.util.List<PathPoint> filtered = examiner.getNeighbours(source, current);
-
-        assertEquals(java.util.List.of(safe), filtered);
-    }
-
-    @Test
-    void keepsSupportedCorridorNodesBesideAnUnsupportedEdge() {
-        BlockSource source = flatSource(Material.DIRT_PATH);
-        PathPoint corridor = pointAt(2, 1, 0);
-        when(source.getMaterialAt(3, 0, 0)).thenReturn(Material.AIR);
-        VectorNode current = mock(VectorNode.class);
-        when(current.getNeighbours(source, current, true)).thenReturn(java.util.List.of(corridor));
-
-        java.util.List<PathPoint> filtered = examiner.getNeighbours(source, current);
-
-        assertEquals(java.util.List.of(corridor), filtered);
-    }
 
     private BlockSource flatSource(Material support) {
         BlockSource source = mock(BlockSource.class);

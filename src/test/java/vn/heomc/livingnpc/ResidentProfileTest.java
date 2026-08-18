@@ -109,6 +109,55 @@ class ResidentProfileTest {
     }
 
     @Test
+    void resettingProfessionKeepsOnlyHomeAndReturnsToOrdinaryResident() {
+        UUID uuid = UUID.randomUUID();
+        StoredLocation home = new StoredLocation("world", 10, 64, 20, 0, 0);
+        ResidentProfile profile = new ResidentProfile(
+                "worker", "Worker", "unspecified", "Farmer",
+                EnumSet.of(ResidentRole.FARMER, ResidentRole.FISHER), "skin",
+                "old biography", List.of("old trait"), "bow", List.of("old goal"), Map.of());
+        FarmerDefinition farmer = new FarmerDefinition(
+                uuid, "village-a", home,
+                new StoredLocation("world", 30, 64, 40, 0, 0), 12,
+                profile, ResidentRole.FISHER,
+                Map.of(ResidentRole.FARMER, new RoleProgress(40L), ResidentRole.FISHER, new RoleProgress(9L)),
+                Map.of(ResidentRole.FARMER, new ResidentSchedule(1000, 12000)),
+                EnumSet.of(BehaviorFlag.MASTER, BehaviorFlag.HARVEST));
+
+        FarmerDefinition reset = farmer.resetToOrdinaryResident("Worker");
+
+        assertEquals(uuid, reset.npcUuid());
+        assertEquals(home, reset.home());
+        assertEquals(ResidentRole.RESIDENT, reset.activeRole());
+        assertEquals(ResidentProfile.adopted("Worker"), reset.profile());
+        assertEquals(null, reset.villageId());
+        assertEquals(null, reset.plot());
+        assertEquals(4, reset.plotRadius());
+        assertEquals(0L, reset.progress(ResidentRole.RESIDENT).experience());
+        assertEquals(Set.of(ResidentRole.RESIDENT), reset.progress().keySet());
+        assertTrue(reset.schedules().isEmpty());
+        assertEquals(BehaviorFlag.safeDefaults(), reset.behaviors());
+    }
+
+    @Test
+    void assigningNewProfessionStartsFromOrdinaryResidentDefaults() {
+        FarmerDefinition resident = new FarmerDefinition(
+                UUID.randomUUID(), "Worker", new StoredLocation("world", 0, 64, 0, 0, 0), null, 4,
+                ResidentProfile.adopted("Worker"), BehaviorFlag.safeDefaults());
+
+        FarmerDefinition fisher = resident.resetToOrdinaryResident("Worker")
+                .withActiveRole(ResidentRole.FISHER);
+
+        assertEquals(ResidentRole.FISHER, fisher.activeRole());
+        assertEquals(null, fisher.villageId());
+        assertEquals(null, fisher.plot());
+        assertEquals(Set.of(ResidentRole.RESIDENT, ResidentRole.FISHER), fisher.profile().roles());
+        assertEquals(0L, fisher.progress(ResidentRole.FISHER).experience());
+        assertTrue(fisher.schedules().isEmpty());
+        assertEquals(BehaviorFlag.safeDefaults(), fisher.behaviors());
+    }
+
+    @Test
     void customCitizensProfileStartsAsResident() {
         ResidentProfile profile = ResidentProfile.adopted("Worker");
 

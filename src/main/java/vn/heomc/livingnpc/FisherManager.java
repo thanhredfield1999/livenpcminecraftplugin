@@ -21,7 +21,8 @@ final class FisherManager {
 
     void tick(long serverTick, LivingNpcConfig config) {
         java.util.Collection<FarmerDefinition> definitions = residents.definitions();
-        net.citizensnpcs.api.npc.NPCRegistry registry = CitizensAPI.getNPCRegistry();
+        net.citizensnpcs.api.npc.NPCRegistry registry = registryOrNull();
+        if (registry == null) return;
         java.util.Set<UUID> current = new java.util.HashSet<>();
         Map<UUID, NPC> availableNpcs = new HashMap<>();
         for (FarmerDefinition definition : definitions) {
@@ -138,5 +139,17 @@ final class FisherManager {
         runtimes.clear();
         nextRuntimeErrorLogTick.clear();
         if (failure != null) throw failure;
+    }
+
+    /**
+     * Citizens chưa luôn publish implementation khi plugin đang enable. API hiện tại ném
+     * {@link IllegalStateException} thay vì trả {@code null}; runtime phải chờ tick sau.
+     */
+    private static net.citizensnpcs.api.npc.NPCRegistry registryOrNull() {
+        try {
+            return CitizensAPI.getNPCRegistry();
+        } catch (IllegalStateException unavailable) {
+            return null;
+        }
     }
 }

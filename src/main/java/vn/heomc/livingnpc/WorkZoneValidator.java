@@ -9,6 +9,9 @@ final class WorkZoneValidator {
     }
 
     static WorkZoneValidation validate(Location center, VillageWorkZoneType type, int radius, int verticalRange) {
+        if (!RuntimeChunkAvailability.loadedArea(center, radius)) {
+            return new WorkZoneValidation(java.util.Set.of(), type.required());
+        }
         EnumSet<Material> found = EnumSet.noneOf(Material.class);
         for (int x = -radius; x <= radius && !satisfies(type, found); x++) {
             for (int z = -radius; z <= radius && !satisfies(type, found); z++) {

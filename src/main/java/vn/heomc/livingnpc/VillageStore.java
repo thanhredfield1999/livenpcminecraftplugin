@@ -224,7 +224,8 @@ final class VillageStore {
         if (current == null || location == null || location.getWorld() == null
                 || !current.center().world().equals(location.getWorld().getName())
                 || !(location.getBlock().getBlockData() instanceof org.bukkit.block.data.type.Gate)) return false;
-        VillageDefinition updated = current.withNavigationGate(StoredLocation.from(location.getBlock().getLocation()));
+        VillageDefinition updated = current.withNavigationGate(
+                new NavigationGate(StoredLocation.from(location.getBlock().getLocation()), "SHARED"));
         if (updated == current) return false;
         villages.put(current.id(), updated);
         if (save()) return true;
@@ -387,12 +388,12 @@ final class VillageStore {
                 StoredLocation legacyRanch = workZones.get(VillageWorkZoneType.RANCH);
                 if (ranchPens.isEmpty() && legacyRanch != null) ranchPens.add(new RanchPen("ranch_1", legacyRanch));
                 workZones.remove(VillageWorkZoneType.RANCH);
-                java.util.ArrayList<StoredLocation> navigationGates = new java.util.ArrayList<>();
+                java.util.ArrayList<NavigationGate> navigationGates = new java.util.ArrayList<>();
                 ConfigurationSection gateSection = section.getConfigurationSection("navigation-gates");
                 if (gateSection != null) for (String gateKey : gateSection.getKeys(false)) {
-                    StoredLocation gate = StoredLocation.load(gateSection.getConfigurationSection(gateKey));
-                    if (gate != null && center.world().equals(gate.world()) && navigationGates.size() < 32
-                            && navigationGates.stream().noneMatch(existing -> sameBlock(existing, gate))) {
+                    NavigationGate gate = NavigationGate.load(gateSection.getConfigurationSection(gateKey));
+                    if (gate != null && center.world().equals(gate.location().world()) && navigationGates.size() < 32
+                            && navigationGates.stream().noneMatch(existing -> sameBlock(existing.location(), gate.location()))) {
                         navigationGates.add(gate);
                     }
                 }

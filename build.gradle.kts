@@ -10,6 +10,7 @@ repositories {
     maven("https://repo.papermc.io/repository/maven-public/")
     maven("https://maven.citizensnpcs.co/repo")
     maven("https://maven.enginehub.org/repo/")
+    maven("https://repo.bluecolored.de/releases")
 }
 
 dependencies {
@@ -18,6 +19,7 @@ dependencies {
         isTransitive = false
     }
     compileOnly("com.sk89q.worldguard:worldguard-bukkit:7.0.16")
+    compileOnly("de.bluecolored:bluemap-api:2.7.7")
 
     testImplementation(platform("org.junit:junit-bom:6.0.1"))
     testImplementation("org.junit.jupiter:junit-jupiter")
@@ -25,6 +27,7 @@ dependencies {
     testImplementation("net.citizensnpcs:citizens-main:2.0.42-SNAPSHOT") {
         isTransitive = false
     }
+    testImplementation("de.bluecolored:bluemap-api:2.7.7")
     testImplementation("org.mockito:mockito-core:5.21.0")
     testRuntimeOnly("org.junit.platform:junit-platform-launcher")
 }

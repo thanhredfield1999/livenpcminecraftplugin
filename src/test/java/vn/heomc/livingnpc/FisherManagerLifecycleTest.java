@@ -345,6 +345,31 @@ class FisherManagerLifecycleTest {
         verify(remaining).tick(100L, config);
     }
 
+    @Test
+    void tickSkipsWhenCitizensRegistryUnavailable() throws ReflectiveOperationException {
+        FarmerManager residents = mock(FarmerManager.class);
+        FisherManager manager = new FisherManager(
+                residents,
+                mock(NpcEconomy.class),
+                mock(VillageStore.class));
+        FisherRuntime runtime = mock(FisherRuntime.class);
+        UUID npcUuid = new UUID(0L, 0L);
+        runtimes(manager).put(npcUuid, runtime);
+        FarmerDefinition definition = definition(npcUuid);
+        when(residents.definitions()).thenReturn(List.of(definition));
+        LivingNpcConfig config = mock(LivingNpcConfig.class);
+
+        try (MockedStatic<CitizensAPI> citizens = mockStatic(CitizensAPI.class)) {
+            citizens.when(CitizensAPI::getNPCRegistry)
+                    .thenThrow(new IllegalStateException("no implementation set"));
+
+            assertDoesNotThrow(() -> manager.tick(100L, config));
+        }
+
+        // Runtime không bị gọi tick, suspend hoặc bất kỳ method nào — tick trả về ngay
+        org.mockito.Mockito.verifyNoInteractions(runtime);
+    }
+
     private static FarmerDefinition definition(UUID uuid) {
         FarmerDefinition definition = mock(FarmerDefinition.class);
         when(definition.npcUuid()).thenReturn(uuid);

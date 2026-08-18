@@ -19,7 +19,19 @@ final class GateRouteDiscovery {
     }
 
     static List<GateRoute.Candidate> discover(
-            Location current, Location target, List<StoredLocation> configuredGates) {
+            Location current, Location target, List<?> configuredGates) {
+        if (configuredGates == null) return List.of();
+        return discover(current, target, configuredGates.stream()
+                        .map(value -> value instanceof NavigationGate gate ? gate
+                                : new NavigationGate((StoredLocation) value, null)).toList(), ResidentRole.FARMER);
+    }
+
+    static List<GateRoute.Candidate> discover(
+                Location current, Location target, List<?> configuredGates, ResidentRole role) {
+            List<NavigationGate> gates = configuredGates == null ? List.of() : configuredGates.stream()
+                    .map(value -> value instanceof NavigationGate gate ? gate
+                            : new NavigationGate((StoredLocation) value, null))
+                    .toList();
         if (current == null || target == null || current.getWorld() == null
                 || !current.getWorld().equals(target.getWorld())) return List.of();
         World world = current.getWorld();
@@ -32,12 +44,17 @@ final class GateRouteDiscovery {
         if (maxY - minY > VERTICAL_RANGE * 4) return List.of();
 
         ArrayList<ScoredCandidate> found = new ArrayList<>();
-        for (StoredLocation configured : configuredGates == null ? List.<StoredLocation>of() : configuredGates) {
-            if (!world.getName().equals(configured.world())) continue;
-            int x = (int) Math.floor(configured.x());
-            int y = (int) Math.floor(configured.y());
-            int z = (int) Math.floor(configured.z());
-            if (y < minY || y > maxY || !liesBetween(current, target, x + 0.5, z + 0.5)
+        for (NavigationGate configured : gates) {
+            if (!configured.allows(role)) continue;
+            StoredLocation location = configured.location();
+            if (!world.getName().equals(location.world())) continue;
+            int x = (int) Math.floor(location.x());
+            int y = (int) Math.floor(location.y());
+            int z = (int) Math.floor(location.z());
+            boolean currentGate = horizontalDistance(current,
+                    new Location(world, x + 0.5, y, z + 0.5)) <= 1.5;
+            if (y < minY || y > maxY || (!liesBetween(current, target, x + 0.5, z + 0.5)
+                    && !currentGate)
                     || distanceToSegmentSquared(x + 0.5, z + 0.5, current, target)
                     > CORRIDOR_RADIUS * CORRIDOR_RADIUS || !world.isChunkLoaded(x >> 4, z >> 4)) continue;
             Block block = world.getBlockAt(x, y, z);

@@ -26,10 +26,15 @@ final class NeedsManager {
             lastTick = serverTick;
             return;
         }
+        net.citizensnpcs.api.npc.NPCRegistry registry = registryOrNull();
+        if (registry == null) {
+            lastTick = serverTick;
+            return;
+        }
         long delta = lastTick < 0L ? 0L : Math.max(0L, serverTick - lastTick);
         lastTick = serverTick;
         for (FarmerDefinition definition : residents.definitions()) {
-            NPC npc = CitizensAPI.getNPCRegistry().getByUniqueId(definition.npcUuid());
+            NPC npc = registry.getByUniqueId(definition.npcUuid());
             if (npc == null || !npc.isSpawned()) continue;
             Location location = npc.getEntity().getLocation();
             if (!location.getWorld().isChunkLoaded(location.getBlockX() >> 4, location.getBlockZ() >> 4)) continue;
@@ -48,6 +53,18 @@ final class NeedsManager {
 
     void shutdown() {
         if (dirty) dirty = !store.save(needs);
+    }
+
+    /**
+     * Citizens chưa luôn publish implementation khi plugin đang enable. API hiện tại ném
+     * {@link IllegalStateException} thay vì trả {@code null}; runtime phải chờ tick sau.
+     */
+    private static net.citizensnpcs.api.npc.NPCRegistry registryOrNull() {
+        try {
+            return CitizensAPI.getNPCRegistry();
+        } catch (IllegalStateException unavailable) {
+            return null;
+        }
     }
 
     private ResidentNeeds initial(UUID npcUuid, Location location) {

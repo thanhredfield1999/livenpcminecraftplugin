@@ -118,6 +118,16 @@ final class GateRoute {
         return gateOpenObserved;
     }
 
+    boolean approachReached(Location current, double margin, double verticalTolerance) {
+        return reached(current, candidate.approach(), Math.max(margin, 2.25), verticalTolerance);
+    }
+
+    void resetToApproach() {
+        leg = Leg.APPROACH;
+        exitSideConfirmations = 0;
+        exitConfirmationTickObserved = false;
+    }
+
     Candidate candidate() {
         return candidate;
     }

@@ -1,25 +1,14 @@
 package vn.heomc.livingnpc;
 
-import java.util.ArrayList;
-import java.util.List;
 import net.citizensnpcs.api.astar.pathfinder.BlockExaminer;
 import net.citizensnpcs.api.astar.pathfinder.BlockSource;
 import net.citizensnpcs.api.astar.pathfinder.PathPoint;
-import net.citizensnpcs.api.astar.pathfinder.VectorNode;
 import org.bukkit.Material;
 import org.bukkit.block.data.BlockData;
 import org.bukkit.block.data.Waterlogged;
 import org.bukkit.util.Vector;
 
-final class VillageRouteExaminer implements BlockExaminer.ReplacementNeighbourGenerator {
-    @Override
-    public List<PathPoint> getNeighbours(BlockSource source, PathPoint point) {
-        if (!(point instanceof VectorNode node)) return null;
-        List<PathPoint> neighbours = new ArrayList<>(node.getNeighbours(source, point, true));
-        neighbours.removeIf(candidate -> isUnsupportedEdge(source, candidate));
-        return neighbours;
-    }
-
+final class VillageRouteExaminer implements BlockExaminer {
     @Override
     public float getCost(BlockSource source, PathPoint point) {
         Vector position = point.getVector();
@@ -47,7 +36,7 @@ final class VillageRouteExaminer implements BlockExaminer.ReplacementNeighbourGe
 
     @Override
     public PassableState isPassable(BlockSource source, PathPoint point) {
-        return PassableState.IGNORE;
+        return isUnsupportedEdge(source, point) ? PassableState.IMPASSABLE : PassableState.IGNORE;
     }
 
     static boolean isUnsupportedEdge(BlockSource source, PathPoint point) {

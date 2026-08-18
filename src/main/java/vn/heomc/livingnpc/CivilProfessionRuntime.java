@@ -94,7 +94,8 @@ final class CivilProfessionRuntime {
         StoredLocation stored = village == null ? null : village.workZone(zoneType);
         Location center = stored == null ? null : stored.resolve();
         if (center == null || !npc.getEntity().getWorld().equals(center.getWorld())
-                || !hasNearbyPlayer(center, village, role, config.activationRange())) {
+                || !RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loadedArea(center, config.workZoneValidationRadius())) {
             suspend();
             return;
         }
@@ -145,8 +146,11 @@ final class CivilProfessionRuntime {
                 startProducing(role, serverTick);
             } else if (!npc.getNavigator().isNavigating()
                     || serverTick - navigationStartedTick >= config.navigationTimeoutTicks()) {
-                suspend();
-                nextActionTick = serverTick + config.navigationRetryBackoffTicks();
+                NavigationRecovery.Result recovery = NavigationRecovery.recover(
+                        npc, station, 2, serverTick, "GOING_TO_WORK_STATION",
+                        config.navigationRetryBackoffTicks());
+                if (recovery == NavigationRecovery.Result.RECOVERED) startProducing(role, serverTick);
+                else nextActionTick = serverTick + config.navigationRetryBackoffTicks();
             }
             return;
         }
@@ -155,19 +159,6 @@ final class CivilProfessionRuntime {
         }
     }
 
-    private boolean hasNearbyPlayer(
-            Location center, VillageDefinition village, ResidentRole role, double range) {
-        if (!center.getWorld().getNearbyPlayers(center, range).isEmpty()
-                || !npc.getEntity().getWorld().getNearbyPlayers(npc.getEntity().getLocation(), range).isEmpty()) {
-            return true;
-        }
-        if (role != ResidentRole.MINER) return false;
-        for (MiningZone zone : village.miningZones()) {
-            Location corner = zone.corner().resolve();
-            if (corner != null && !corner.getWorld().getNearbyPlayers(corner, range).isEmpty()) return true;
-        }
-        return false;
-    }
 
     private boolean validZone(
             StoredLocation stored, Location center, VillageWorkZoneType zoneType,
@@ -544,12 +535,10 @@ final class CivilProfessionRuntime {
 
     private void navigate(Location target, long serverTick, LivingNpcConfig config) {
         Navigator navigator = npc.getNavigator();
-        LivingNavigation.allowDoors(navigator.getLocalParameters())
-                .speedModifier(config.navigationSpeedModifier())
-                .distanceMargin(config.navigationDistanceMargin())
-                .destinationTeleportMargin(0.0)
-                .stuckAction((stuckNpc, stuckNavigator) -> false);
-        navigator.setTarget(target);
+        if (!MovementService.startSimpleNavigation(
+                navigator, target, config.navigationSpeedModifier(), config.navigationDistanceMargin())) {
+            return;
+        }
         station = target;
         navigationStartedTick = serverTick;
         phase = FarmerPhase.GOING_TO_WORK_STATION;

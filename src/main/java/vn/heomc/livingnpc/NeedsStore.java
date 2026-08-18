@@ -87,6 +87,7 @@ final class NeedsStore {
             section.set("thirst-decay-ticks", value.thirstDecayTicks());
         }
         File temporary = new File(file.getParentFile(), file.getName() + ".tmp");
+        long startNanos = System.nanoTime();
         try {
             yaml.save(temporary);
             try {
@@ -95,6 +96,7 @@ final class NeedsStore {
             } catch (java.nio.file.AtomicMoveNotSupportedException exception) {
                 Files.move(temporary.toPath(), file.toPath(), StandardCopyOption.REPLACE_EXISTING);
             }
+            SaveTelemetry.record(logger, "needs.yml", startNanos, file.length());
             return true;
         } catch (IOException exception) {
             logger.severe("Could not save resident needs: " + exception.getMessage());

@@ -3,13 +3,17 @@ package vn.heomc.livingnpc;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
+import static org.junit.jupiter.api.Assertions.assertThrows;
 import static org.junit.jupiter.api.Assertions.assertTrue;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
+import java.lang.reflect.Constructor;
+import java.lang.reflect.Field;
 import java.util.List;
+import java.util.Set;
 import java.util.concurrent.atomic.AtomicInteger;
 import net.citizensnpcs.api.npc.NPC;
 import org.bukkit.Location;
@@ -127,5 +131,96 @@ class LivingDoorExaminerTest {
 
         verify(open).setOpen(false);
         verify(door).setBlockData(open);
+    }
+
+    @Test
+    void shutdownVanKetThucCloseTaskConLaiSauKhiMotTaskLoi() throws Exception {
+        World world = mock(World.class);
+        Openable firstData = openDoorData();
+        Openable secondData = openDoorData();
+        Block first = openDoorBlock(world, 0, firstData);
+        Block second = openDoorBlock(world, 1, secondData);
+        doThrow(new IllegalStateException("close failed")).when(first).setBlockData(firstData);
+        doThrow(new IllegalStateException("close failed")).when(second).setBlockData(secondData);
+
+        try {
+            closeTasks().add(newCloseTask(mock(NPC.class), first));
+            closeTasks().add(newCloseTask(mock(NPC.class), second));
+
+            RuntimeException failure = assertThrows(
+                    IllegalStateException.class, LivingDoorExaminer::shutdown);
+
+            verify(firstData).setOpen(false);
+            verify(secondData).setOpen(false);
+            assertEquals(1, failure.getSuppressed().length);
+            assertTrue(closeTasks().isEmpty());
+        } finally {
+            closeTasks().clear();
+            LivingDoorExaminer.resume();
+        }
+    }
+
+    @Test
+    void shutdownChanCallbackMoChoToiKhiResume() {
+        NPC npc = mock(NPC.class);
+        Block door = mock(Block.class);
+        World world = mock(World.class);
+        AtomicInteger opened = new AtomicInteger();
+        when(npc.getStoredLocation()).thenReturn(new Location(world, 0.5, 64, 0.5));
+        when(door.getLocation()).thenReturn(new Location(world, 0, 64, 0));
+        when(door.getType()).thenReturn(Material.OAK_DOOR);
+
+        try {
+            LivingDoorExaminer.shutdown();
+            newCountingOpener(opened).run(npc, door, List.of(door), 0);
+
+            assertEquals(0, opened.get());
+
+            LivingDoorExaminer.resume();
+            newCountingOpener(opened).run(npc, door, List.of(door), 0);
+
+            assertEquals(1, opened.get());
+        } finally {
+            LivingDoorExaminer.resume();
+        }
+    }
+
+    private static LivingDoorExaminer.DoorOpener newCountingOpener(AtomicInteger opened) {
+        return new LivingDoorExaminer.DoorOpener(
+                (ignoredNpc, ignoredBlock, ignoredMaterial) -> {
+                    opened.incrementAndGet();
+                    return false;
+                },
+                (ignoredNpc, ignoredBlock, ignoredMaterial) -> {
+                },
+                ignoredMaterial -> true);
+    }
+
+    private static Openable openDoorData() {
+        Openable data = mock(Openable.class);
+        when(data.isOpen()).thenReturn(true);
+        return data;
+    }
+
+    private static Block openDoorBlock(World world, int x, Openable data) {
+        Block block = mock(Block.class);
+        when(block.getType()).thenReturn(Material.OAK_DOOR);
+        when(block.getBlockData()).thenReturn(data);
+        when(block.getLocation()).thenReturn(new Location(world, x, 64, 0));
+        return block;
+    }
+
+    private static Object newCloseTask(NPC npc, Block block) throws Exception {
+        Constructor<?> constructor = Class.forName("vn.heomc.livingnpc.LivingDoorExaminer$CloseTask")
+                .getDeclaredConstructor(NPC.class, Block.class, Material.class);
+        constructor.setAccessible(true);
+        return constructor.newInstance(npc, block, Material.OAK_DOOR);
+    }
+
+    @SuppressWarnings("unchecked")
+    private static Set<Object> closeTasks() throws Exception {
+        Field field = LivingDoorExaminer.class.getDeclaredField("CLOSE_TASKS");
+        field.setAccessible(true);
+        return (Set<Object>) field.get(null);
     }
 }

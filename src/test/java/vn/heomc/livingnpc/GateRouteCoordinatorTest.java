@@ -118,6 +118,37 @@ class GateRouteCoordinatorTest {
     }
 
     @Test
+    void twoSequentialConfiguredGatesRebuildNavigatorPathAfterFirstGate() {
+        FakeNavigation navigation = new FakeNavigation();
+        GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 20L, 0.75, 1.0);
+        GateRoute.Candidate firstGate = candidate(4, 6);
+        GateRoute.Candidate secondGate = candidate(10, 12);
+        Location finalTarget = location(18, 64, 0);
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.start(location(0, 64, 0), finalTarget,
+                        List.of(firstGate, secondGate), 0L));
+        coordinator.gateOpenIntent(firstGate.key());
+        assertEquals(List.of(firstGate.approach()), navigation.targets);
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(firstGate.approach(), 1L));
+        assertEquals(List.of(firstGate.approach(), firstGate.exit()), navigation.targets);
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(firstGate.exit(), 2L));
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(firstGate.exit(), 3L));
+        assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.approach()),
+                navigation.targets);
+
+        // Gate 2 can receive open intent only after route rebuild for Gate 1.
+        coordinator.gateOpenIntent(secondGate.key());
+        assertTrue(coordinator.active());
+        coordinator.cancel();
+        assertFalse(coordinator.active());
+    }
+
+    @Test
     void cancelXoaRouteVaHuyNavigationTam() {
         FakeNavigation navigation = new FakeNavigation();
         GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 20L, 0.75, 1.0);
@@ -313,6 +344,11 @@ class GateRouteCoordinatorTest {
         public void cancel() {
             cancelCount++;
             navigating = false;
+        }
+
+        @Override
+        public boolean requestGate(String gateKey) {
+            return true;
         }
     }
 }

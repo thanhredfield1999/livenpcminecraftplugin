@@ -9,6 +9,8 @@ import com.sk89q.worldguard.protection.regions.RegionContainer;
 import com.sk89q.worldguard.protection.regions.RegionQuery;
 import com.sk89q.worldguard.protection.regions.ProtectedRegion;
 import com.sk89q.worldedit.math.BlockVector3;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Locale;
 import org.bukkit.Location;
 import org.bukkit.plugin.PluginManager;
@@ -42,6 +44,25 @@ final class WorldMutationPolicy {
 
     boolean available() {
         return worldGuardAvailable;
+    }
+
+    boolean requiresWorldGuard() {
+        return requireWorldGuard;
+    }
+
+    /**
+     * Những thay đổi không thể áp dụng an toàn qua {@code /lnpc reload} vì policy
+     * giữ ảnh chụp dependency và config từ lúc plugin enable.
+     */
+    List<String> restartRequiredReasons(PluginManager pluginManager, boolean configuredRequireWorldGuard) {
+        List<String> reasons = new ArrayList<>();
+        if (requireWorldGuard != configuredRequireWorldGuard) {
+            reasons.add("protection.require-worldguard");
+        }
+        if (worldGuardAvailable != pluginManager.isPluginEnabled("WorldGuard")) {
+            reasons.add("WorldGuard availability");
+        }
+        return List.copyOf(reasons);
     }
 
     boolean hasMiningRegion(Location location) {

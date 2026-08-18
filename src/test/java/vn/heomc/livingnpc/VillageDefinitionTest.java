@@ -65,13 +65,13 @@ class VillageDefinitionTest {
         VillageDefinition village = new VillageDefinition("village", "Village", center, null, null, null)
                 .withVisitorGate(visitorGate);
 
-        VillageDefinition changed = village.withNavigationGate(first)
-                .withNavigationGate(duplicateBlock).withNavigationGate(second);
+        VillageDefinition changed = village.withNavigationGate(new NavigationGate(first, "SHARED"))
+                .withNavigationGate(new NavigationGate(duplicateBlock, "SHARED")).withNavigationGate(new NavigationGate(second, "SHARED"));
 
         assertTrue(village.navigationGates().isEmpty());
-        assertEquals(List.of(first, second), changed.navigationGates());
+        assertEquals(List.of(new NavigationGate(first, "SHARED"), new NavigationGate(second, "SHARED")), changed.navigationGates());
         assertEquals(visitorGate, changed.visitorGate());
-        assertEquals(List.of(second), changed.withoutNavigationGate(0).navigationGates());
+        assertEquals(List.of(new NavigationGate(second, "SHARED")), changed.withoutNavigationGate(0).navigationGates());
     }
 
     @Test

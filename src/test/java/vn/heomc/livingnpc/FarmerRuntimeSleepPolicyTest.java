@@ -1,5 +1,6 @@
 package vn.heomc.livingnpc;
 
+import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertSame;
@@ -63,6 +64,53 @@ class FarmerRuntimeSleepPolicyTest {
     }
 
     @Test
+    void retainsBedIntentWhenNavigationRecoveryIsUnavailable() throws ReflectiveOperationException {
+        net.citizensnpcs.api.npc.NPC npc = mock(net.citizensnpcs.api.npc.NPC.class);
+        HumanEntity human = mock(HumanEntity.class);
+        World world = mock(World.class);
+        Location current = new Location(world, 0, 64, 0);
+        Location bed = new Location(world, 10, 64, 10);
+        when(npc.isSpawned()).thenReturn(true);
+        when(npc.getEntity()).thenReturn(human);
+        when(npc.getOrAddTrait(net.citizensnpcs.api.trait.trait.Equipment.class))
+                .thenReturn(null);
+        when(human.getWorld()).thenReturn(world);
+        when(human.getLocation()).thenReturn(current);
+        when(human.isSleeping()).thenReturn(false);
+        when(world.getTime()).thenReturn(18000L);
+        when(world.isChunkLoaded(org.mockito.ArgumentMatchers.anyInt(),
+                org.mockito.ArgumentMatchers.anyInt())).thenReturn(false);
+        when(npc.getNavigator()).thenReturn(mock(net.citizensnpcs.api.ai.Navigator.class));
+
+        UUID uuid = UUID.randomUUID();
+        ResidentProfile profile = new ResidentProfile(
+                "worker", "Worker", "unspecified", "Worker",
+                Set.of(ResidentRole.FARMER), "");
+        FarmerDefinition definition = new FarmerDefinition(
+                uuid, null, new StoredLocation("world", 0, 64, 0, 0, 0), null, 4,
+                profile, ResidentRole.FARMER, Map.of(), Map.of(),
+                EnumSet.of(BehaviorFlag.MASTER));
+        LivingNpcConfig config = mock(LivingNpcConfig.class);
+        when(config.seasonSix()).thenReturn(new SeasonSixSettings(false, 200L));
+        when(config.navigationTimeoutTicks()).thenReturn(100L);
+        when(config.navigationRetryBackoffTicks()).thenReturn(60L);
+
+        org.bukkit.plugin.PluginManager pluginManager = mock(org.bukkit.plugin.PluginManager.class);
+        FarmerRuntime runtime = new FarmerRuntime(
+                npc, definition, mock(NpcEconomy.class),
+                new WorldMutationPolicy(pluginManager, false), mock(VillageStore.class));
+        setField(runtime, "phase", FarmerPhase.GOING_TO_BED);
+        setField(runtime, "sleepingBed", bed);
+        setField(runtime, "navigationTarget", bed);
+        setField(runtime, "navigationStartedTick", 0L);
+
+        assertTrue(runtime.tickSleep(100L, config));
+        assertEquals(FarmerPhase.GOING_TO_BED, runtime.phase());
+        assertSame(bed, runtime.sleepingBed());
+        assertEquals("BED_NAVIGATION_FAILED", runtime.sleepDebug());
+    }
+
+    @Test
     void selectsNearestSafeCandidateWithoutRunningPathfinding() {
         World world = mock(World.class);
         Location current = new Location(world, 0, 0, 0);
@@ -95,5 +143,12 @@ class FarmerRuntimeSleepPolicyTest {
         assertFalse(FarmerManager.sameBlock(
                 new Location(world, -4.0, -57.0, 8.0),
                 new Location(otherWorld, -4.0, -57.0, 8.0)));
+    }
+
+    private static void setField(FarmerRuntime runtime, String name, Object value)
+            throws ReflectiveOperationException {
+        java.lang.reflect.Field field = FarmerRuntime.class.getDeclaredField(name);
+        field.setAccessible(true);
+        field.set(runtime, value);
     }
 }

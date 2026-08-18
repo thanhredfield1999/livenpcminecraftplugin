@@ -8,7 +8,7 @@ record VillageDefinition(
         StoredLocation marketPoint,
         StoredLocation scenicPoint,
         StoredLocation visitorGate,
-        java.util.List<StoredLocation> navigationGates,
+        java.util.List<NavigationGate> navigationGates,
         int ranchAnimalLimit,
         java.util.Map<VillageWorkZoneType, StoredLocation> workZones,
         java.util.List<RanchPen> ranchPens,
@@ -100,22 +100,22 @@ record VillageDefinition(
         return copy(deliveryLocations, marketPoint, scenicPoint, gate, ranchAnimalLimit, workZones, ranchPens, seats, merchantStalls);
     }
 
-    VillageDefinition withNavigationGate(StoredLocation gate) {
+    VillageDefinition withNavigationGate(NavigationGate gate) {
         if (gate == null || navigationGates.size() >= 32
-                || navigationGates.stream().anyMatch(existing -> sameBlock(existing, gate))) return this;
-        java.util.ArrayList<StoredLocation> updated = new java.util.ArrayList<>(navigationGates);
+                || navigationGates.stream().anyMatch(existing -> sameBlock(existing.location(), gate.location()))) return this;
+        java.util.ArrayList<NavigationGate> updated = new java.util.ArrayList<>(navigationGates);
         updated.add(gate);
         return copyWithNavigationGates(updated);
     }
 
     VillageDefinition withoutNavigationGate(int index) {
         if (index < 0 || index >= navigationGates.size()) return this;
-        java.util.ArrayList<StoredLocation> updated = new java.util.ArrayList<>(navigationGates);
+        java.util.ArrayList<NavigationGate> updated = new java.util.ArrayList<>(navigationGates);
         updated.remove(index);
         return copyWithNavigationGates(updated);
     }
 
-    private VillageDefinition copyWithNavigationGates(java.util.List<StoredLocation> updated) {
+    private VillageDefinition copyWithNavigationGates(java.util.List<NavigationGate> updated) {
         return new VillageDefinition(id, name, center, deliveryLocations, marketPoint, scenicPoint,
                 visitorGate, updated, ranchAnimalLimit, workZones, ranchPens, seats,
                 merchantStalls, miningZones, activityPoints);

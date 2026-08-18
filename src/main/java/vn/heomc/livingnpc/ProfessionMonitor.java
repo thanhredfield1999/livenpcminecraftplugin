@@ -7,6 +7,7 @@ import java.util.UUID;
 import java.util.logging.Logger;
 import net.citizensnpcs.api.CitizensAPI;
 import net.citizensnpcs.api.npc.NPC;
+import net.citizensnpcs.trait.SkinTrait;
 import org.bukkit.Location;
 
 final class ProfessionMonitor {
@@ -197,17 +198,8 @@ final class ProfessionMonitor {
             if (center == null) return "chưa đặt " + zone.storageKey();
         }
         if (!npc.getEntity().getWorld().equals(center.getWorld())) return "NPC và khu làm việc khác world";
-        boolean playerNearby = !center.getWorld().getNearbyPlayers(center, config.activationRange()).isEmpty()
-                || !npc.getEntity().getWorld().getNearbyPlayers(
-                        npc.getEntity().getLocation(), config.activationRange()).isEmpty();
-        if (!playerNearby && definition.activeRole() == ResidentRole.MINER) {
-            playerNearby = village.miningZones().stream().map(MiningZone::corner).map(StoredLocation::resolve)
-                    .filter(java.util.Objects::nonNull)
-                    .anyMatch(corner -> !corner.getWorld().getNearbyPlayers(corner, config.activationRange()).isEmpty());
-        }
-        if (!playerNearby) {
-            return "không có người chơi gần NPC hoặc khu làm việc";
-        }
+        if (!RuntimeChunkAvailability.loaded(npc.getEntity().getLocation())
+                || !RuntimeChunkAvailability.loaded(center)) return "world hoặc chunk làm việc chưa load";
         ResidentSchedule schedule = definition.schedule(
                 definition.activeRole(), new ResidentSchedule(config.workStartTick(), config.workEndTick()));
         if (definition.enabled(BehaviorFlag.FOLLOW_SCHEDULE)
@@ -224,8 +216,15 @@ final class ProfessionMonitor {
     private void traceAction(
             FarmerDefinition definition, NPC npc, State state, FarmerPhase phase,
             Location current, long serverTick) {
-        boolean navigating = npc.getNavigator().isNavigating();
-        Location target = npc.getNavigator().getTargetAsLocation();
+        net.citizensnpcs.api.ai.Navigator navigator = npc.getNavigator();
+        boolean navigating = navigator.isNavigating();
+        Location target = navigator.getTargetAsLocation();
+        net.citizensnpcs.api.ai.PathStrategy pathStrategy = navigator.getPathStrategy();
+        VillageDefinition village = villages.get(definition.villageId());
+        NavigationDiagnostics.shared().recordAction(
+                definition, village, npc.getName(), phase, current, target, navigating,
+                pathStrategy == null ? "none" : pathStrategy.getClass().getSimpleName(),
+                NavigationDiagnostics.pathState(pathStrategy), serverTick, skinName(npc));
         String targetKey = locationKey(target);
         if (phase == state.tracedPhase && navigating == state.tracedNavigating
                 && targetKey.equals(state.tracedTarget)) return;
@@ -245,6 +244,13 @@ final class ProfessionMonitor {
         if (location == null || location.getWorld() == null) return "none";
         return location.getWorld().getName() + ":" + location.getBlockX() + ","
                 + location.getBlockY() + "," + location.getBlockZ();
+    }
+
+    private static String skinName(NPC npc) {
+        if (npc == null) return null;
+        SkinTrait skin = npc.getTraitNullable(SkinTrait.class);
+        String name = skin == null ? null : skin.getSkinName();
+        return name != null && name.matches("[A-Za-z0-9_]{1,16}") ? name : null;
     }
 
     private static String distance(Location from, Location to) {

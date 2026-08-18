@@ -296,16 +296,17 @@ final class ResidentGui implements Listener {
                 ResidentMenu.Type.NAVIGATION_GATE_LIST, null, village.id(), 54,
                 Component.text("Cổng điều hướng - " + village.name()));
         for (int index = 0; index < village.navigationGates().size() && index < 45; index++) {
-            StoredLocation gate = village.navigationGates().get(index);
+            NavigationGate gate = village.navigationGates().get(index);
             menu.navigationGatesBySlot().put(index, index);
-            Location resolved = gate.resolve();
+            Location resolved = gate.location().resolve();
             boolean valid = resolved != null && resolved.getBlock().getBlockData()
                     instanceof org.bukkit.block.data.type.Gate;
             menu.getInventory().setItem(index, item(
                     valid ? Material.SPRUCE_FENCE_GATE : Material.BARRIER,
                     "Cổng " + (index + 1), valid ? NamedTextColor.GREEN : NamedTextColor.RED,
-                    List.of("World: " + gate.world(),
-                            "XYZ: " + (int) gate.x() + ", " + (int) gate.y() + ", " + (int) gate.z(),
+                    List.of("World: " + gate.location().world(),
+                                                "Access: " + (gate.accessClass() == null ? "LEGACY/DENY" : gate.accessClass()),
+                                                "XYZ: " + (int) gate.location().x() + ", " + (int) gate.location().y() + ", " + (int) gate.location().z(),
                             valid ? "Trạng thái: fence gate hợp lệ" : "Trạng thái: world chưa load hoặc block đã đổi",
                             "Click trái: dịch chuyển tới cổng", "Shift + click phải: xóa cấu hình")));
         }
@@ -774,15 +775,15 @@ final class ResidentGui implements Listener {
             case NAVIGATION_GATE_LIST -> {
                 Integer index = menu.navigationGatesBySlot().get(slot);
                 VillageDefinition village = plugin.villages().get(menu.villageId());
-                StoredLocation gate = village == null || index == null || index >= village.navigationGates().size()
-                        ? null : village.navigationGates().get(index);
+                NavigationGate gate = village == null || index == null || index >= village.navigationGates().size()
+                                        ? null : village.navigationGates().get(index);
                 if (index != null && event.isShiftClick() && event.isRightClick()) {
                     if (plugin.villages().removeNavigationGate(menu.villageId(), index)) {
                         player.sendMessage(Component.text("[ĐÃ XÓA] Cổng điều hướng đã được gỡ.", NamedTextColor.GREEN));
                     }
                     openNavigationGates(player, menu.villageId());
                 } else if (gate != null && event.isLeftClick()) {
-                    Location location = gate.resolve();
+                    Location location = gate == null ? null : gate.location().resolve();
                     Location target = location == null ? null : safeLocationNear(location);
                     if (target != null && player.teleport(target)) {
                         player.sendMessage(Component.text("[ĐÃ DỊCH CHUYỂN] Tới cổng điều hướng.", NamedTextColor.GREEN));
@@ -1631,7 +1632,8 @@ final class ResidentGui implements Listener {
             player.sendMessage(Component.text("Phải click phải trực tiếp vào fence gate.", NamedTextColor.RED));
         } else if (plugin.villages().addNavigationGate(session.villageId(), block.getLocation())) {
             player.sendMessage(Component.text(
-                    "[ĐÃ XONG] NPC có thể dùng cổng này khi nó nằm trên tuyến đường.", NamedTextColor.GREEN));
+                    "[ĐÃ XONG] Đã lưu cổng SHARED; FARMER/RANCHER/FISHER có thể dùng khi nằm trên tuyến đường.",
+                    NamedTextColor.GREEN));
         } else {
             player.sendMessage(Component.text(
                     "Không thể lưu: cổng phải cùng world, chưa trùng và làng chưa đủ 32 cổng.", NamedTextColor.RED));
@@ -1909,8 +1911,13 @@ final class ResidentGui implements Listener {
     }
 
     private void reload(Player player, UUID returnToResident) {
-        plugin.reloadPluginConfig();
+        java.util.List<String> restartRequired = plugin.reloadPluginConfig();
         player.sendMessage(Component.text("[ĐÃ XONG] Đã tải lại cấu hình.", NamedTextColor.GREEN));
+        if (!restartRequired.isEmpty()) {
+            player.sendMessage(Component.text(
+                    "⚠ Cần khởi động lại server để áp dụng: " + String.join(", ", restartRequired),
+                    NamedTextColor.YELLOW));
+        }
         if (returnToResident == null) {
             openList(player);
         } else {

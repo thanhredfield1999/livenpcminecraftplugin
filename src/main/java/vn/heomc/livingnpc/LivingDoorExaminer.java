@@ -39,6 +39,7 @@ final class LivingDoorExaminer implements BlockExaminer {
     private static final double CLOSE_DISTANCE_SQUARED = 1.8 * 1.8;
     private static final int CLOSE_TASK_TIMEOUT_TICKS = 240;
     private static final Set<CloseTask> CLOSE_TASKS = new HashSet<>();
+    private static boolean accepting = true;
 
     @Override
     public float getCost(BlockSource source, PathPoint point) {
@@ -63,9 +64,33 @@ final class LivingDoorExaminer implements BlockExaminer {
         return PassableState.PASSABLE;
     }
 
+    /**
+     * Chốt examiner rồi kết thúc mọi close-task còn lại.
+     *
+     * <p>Examiner nằm trong {@code NavigatorParameters} mặc định của NPC được quản lý nên
+     * Citizens vẫn có thể gọi lại callback sau khi runtime đã dừng. Vì vậy stop phải là một
+     * chuyển trạng thái: sau đây examiner từ chối mở block và tạo close-task mới cho tới khi
+     * {@link #resume()} được gọi. Mỗi task được kết thúc độc lập để một lỗi không bỏ sót
+     * các task còn lại.</p>
+     */
     static void shutdown() {
-        for (CloseTask task : Set.copyOf(CLOSE_TASKS)) task.finish(true);
+        accepting = false;
+        RuntimeException failure = null;
+        for (CloseTask task : Set.copyOf(CLOSE_TASKS)) {
+            try {
+                task.finish(true);
+            } catch (RuntimeException exception) {
+                if (failure == null) failure = exception;
+                else if (failure != exception) failure.addSuppressed(exception);
+            }
+        }
         CLOSE_TASKS.clear();
+        if (failure != null) throw failure;
+    }
+
+    /** Mở lại examiner khi runtime được bật lại. Idempotent. */
+    static void resume() {
+        accepting = true;
     }
 
     static boolean closeIfStillOpen(Block block, Material expectedMaterial) {
@@ -85,7 +110,7 @@ final class LivingDoorExaminer implements BlockExaminer {
 
         DoorOpener() {
             this(LivingDoorExaminer::openIfStillValid,
-                    (npc, block, material) -> new CloseTask(npc, block, material).schedule(),
+                    LivingDoorExaminer::scheduleManagedClose,
                     LivingDoorExaminer::isSupported);
         }
 
@@ -99,7 +124,7 @@ final class LivingDoorExaminer implements BlockExaminer {
 
         @Override
         public void run(NPC npc, Block point, List<Block> path, int index) {
-            if (attempted || npc == null || point == null) return;
+            if (!accepting || attempted || npc == null || point == null) return;
             Material material = point.getType();
             if (!supportedMaterial.test(material)
                     || !withinDistance(npc.getStoredLocation(), point.getLocation(), OPEN_DISTANCE_SQUARED)) {
@@ -132,7 +157,8 @@ final class LivingDoorExaminer implements BlockExaminer {
     }
 
     private static boolean openIfStillValid(NPC npc, Block block, Material expectedMaterial) {
-        if (block.getType() != expectedMaterial || !isSupported(expectedMaterial)) return false;
+        if (!accepting || block == null || block.getType() != expectedMaterial
+                || !isSupported(expectedMaterial)) return false;
         BlockData before = block.getBlockData();
         if (!(before instanceof Openable openable) || openable.isOpen()) return false;
 
@@ -140,14 +166,24 @@ final class LivingDoorExaminer implements BlockExaminer {
                 ? new NPCOpenDoorEvent(npc, block)
                 : new NPCOpenGateEvent(npc, block);
         Bukkit.getPluginManager().callEvent((Event) cancellable);
-        if (cancellable.isCancelled() || block.getType() != expectedMaterial) return false;
+        if (cancellable.isCancelled()) return false;
+        return openAfterAuthorization(npc, block, expectedMaterial);
+    }
 
+    static boolean openAfterAuthorization(NPC npc, Block block, Material expectedMaterial) {
+        if (!accepting || block == null || block.getType() != expectedMaterial
+                || !isSupported(expectedMaterial)) return false;
         BlockData current = block.getBlockData();
         if (!(current instanceof Openable currentOpenable) || currentOpenable.isOpen()) return false;
         currentOpenable.setOpen(true);
         block.setBlockData(currentOpenable);
-        if (npc.getEntity() instanceof LivingEntity livingEntity) livingEntity.swingMainHand();
+        if (npc != null && npc.getEntity() instanceof LivingEntity livingEntity) livingEntity.swingMainHand();
         return true;
+    }
+
+    static void scheduleManagedClose(NPC npc, Block block, Material expectedMaterial) {
+        if (!accepting) return;
+        new CloseTask(npc, block, expectedMaterial).schedule();
     }
 
     private static boolean isSupported(Material material) {

@@ -54,7 +54,9 @@ To re-check the current server without building, deploying or restarting it:
 .\tools\build-deploy-smoke.ps1 -CheckOnly
 ```
 
-Important behavior controls are in `plugins/LivingNPC/config.yml`: `activation-range`, `danger-range`, the work window, bounded scan interval, inspection duration, ambient timing/player notice/wander radius and Citizens navigation parameters.
+Important behavior controls are in `plugins/LivingNPC/config.yml`: `activation-range` for interaction/diagnostic only (not task activation), `danger-range`, the work window, bounded scan interval, inspection duration, ambient timing/player notice/wander radius and Citizens navigation parameters. A configured runtime pauses fail-closed while its required world or chunk is unavailable; it never force-loads chunks and resumes on a later tick after availability returns.
+
+Telemetry export for BotChecker/Pixel Map is opt-in under `telemetry.export`. Default is disabled. When enabled, LivingNPC captures the bounded in-memory telemetry snapshot as immutable JSON on the server thread and writes it asynchronously to `plugins/LivingNPC/telemetry/latest.json` by default. The configured file must be a relative `.json` path inside `plugins/LivingNPC`; a sibling `.tmp` file is atomically moved into place when the filesystem supports it. `/lnpc telemetry json` prints the same bounded snapshot, and `/lnpc telemetry status` shows export enabled/path/last write status. `/lnpc reload` applies `telemetry.export.enabled`, `telemetry.export.file` and `telemetry.export.interval-ticks` by cancelling and replacing the export task; no server restart is required for these keys. BotChecker/Pixel Map should treat the file as a replace-only JSON snapshot contract, not an append log.
 
 Farmer daily-plan controls are under `farmer.daily-plan`. Lunch is enabled by default and lasts `1000` Minecraft ticks (one in-game hour). The break is centered inside each farmer's configured schedule, including custom schedules that cross midnight. Lunch does not trigger end-of-shift sales or reset production quota.
 

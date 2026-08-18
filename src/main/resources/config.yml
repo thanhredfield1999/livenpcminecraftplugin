@@ -1,7 +1,31 @@
+# Durable config schema. Older versions migrate additively; future versions fail closed.
+config-version: 1
 tick-interval: 10
 runtime:
   # Emergency kill switch. Disabling this keeps NPC data and admin commands available but stops all runtime ticks.
   enabled: true
+telemetry:
+  # Economy and visitor payloads are separate bounded opt-ins. They are omitted unless enabled.
+  economy:
+    enabled: false
+  visitors:
+    enabled: false
+  export:
+    # Opt-in BotChecker/Pixel Map snapshot export. Disabled by default; /lnpc telemetry json remains available.
+    enabled: false
+    # Relative to plugins/LivingNPC. Must stay inside the data folder and name a .json file.
+    file: telemetry/latest.json
+    # Main thread captures immutable bounded JSON; async worker writes it with same-directory atomic replace when supported.
+    interval-ticks: 100
+bluemap:
+  markers:
+    # Opt-in BlueMap marker export. Disabled by default; requires BlueMap to be installed and ready.
+    enabled: false
+    # Main-thread update interval. BlueMap API is optional and fail-closed when world/map is not mapped.
+    interval-ticks: 100
+    # Remove NPC markers when latest telemetry is older than this tick age.
+    stale-ticks: 600
+# Chỉ dùng cho hành vi tương tác/diagnostic; không gate runtime task đã cấu hình hợp lệ.
 activation-range: 48.0
 work-start-tick: 1000
 work-end-tick: 12000
@@ -53,8 +77,8 @@ resident:
     trip-cooldown-max-ticks: 360
 seating:
   enabled: true
-  rest-duration-min-ticks: 100
-  rest-duration-max-ticks: 240
+  rest-duration-min-ticks: 600
+  rest-duration-max-ticks: 1200
   stand-duration-ticks: 8
 needs:
   # Season 7 foundation. Keep disabled until food/water behavior and transaction replay are enabled.

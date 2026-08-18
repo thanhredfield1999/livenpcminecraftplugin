@@ -41,6 +41,7 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             case "sethome" -> setHome(sender, args);
             case "setplot" -> setPlot(sender, args);
             case "status" -> status(sender, args);
+            case "telemetry" -> telemetry(sender, args);
             case "remove" -> remove(sender, args);
             case "reload" -> reload(sender);
             default -> {
@@ -349,9 +350,37 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
         }
     }
 
+    private void telemetry(CommandSender sender, String[] args) {
+        if (args.length < 2) {
+            error(sender, "Cách dùng: /livingnpc telemetry <json|status>");
+            return;
+        }
+        if (args[1].equalsIgnoreCase("json")) {
+            sender.sendMessage(Component.text(plugin.telemetrySnapshotJson(), NamedTextColor.GRAY));
+            return;
+        }
+        if (args[1].equalsIgnoreCase("status")) {
+            NpcTelemetryExportStatus status = plugin.telemetryExportStatus();
+            sender.sendMessage(Component.text(
+                    "Telemetry export: enabled=" + status.enabled()
+                            + " path=" + status.path()
+                            + " lastStatus=" + status.lastWriteStatus()
+                            + " lastBytes=" + status.lastWriteBytes()
+                            + " queued=" + status.writeQueued(),
+                    status.enabled() ? NamedTextColor.GREEN : NamedTextColor.YELLOW));
+            return;
+        }
+        error(sender, "Cách dùng: /livingnpc telemetry <json|status>");
+    }
+
     private void reload(CommandSender sender) {
-        plugin.reloadPluginConfig();
+        java.util.List<String> restartRequired = plugin.reloadPluginConfig();
         success(sender, "Đã tải lại cấu hình LivingNPC.");
+        if (!restartRequired.isEmpty()) {
+            sender.sendMessage(Component.text(
+                    "⚠ Cần khởi động lại server để áp dụng: " + String.join(", ", restartRequired),
+                    NamedTextColor.YELLOW));
+        }
     }
 
     private Player requirePlayer(CommandSender sender) {
@@ -383,9 +412,13 @@ final class LivingNpcCommand implements CommandExecutor, TabCompleter {
             String prefix = args[0].toLowerCase();
             return List.of(
                             "list", "help", "create", "tiepnhan", "ganlang",
-                            "cancel", "lang", "status", "remove", "reload").stream()
+                            "cancel", "lang", "status", "telemetry", "remove", "reload").stream()
                     .filter(value -> value.startsWith(prefix))
                     .toList();
+        }
+        if (args.length == 2 && args[0].equalsIgnoreCase("telemetry")) {
+            String prefix = args[1].toLowerCase(java.util.Locale.ROOT);
+            return List.of("json", "status").stream().filter(value -> value.startsWith(prefix)).toList();
         }
         if (args.length == 3
                 && (args[0].equalsIgnoreCase("tiepnhan") || args[0].equalsIgnoreCase("adopt")

@@ -44,6 +44,29 @@ final class RuntimeStopCoordinatorTest {
     }
 
     @Test
+    void startVanChayResumeConLaiVaStopVanCleanupThanhPhanResumeLoi() {
+        List<String> calls = new ArrayList<>();
+        RuntimeStopCoordinator coordinator = new RuntimeStopCoordinator(
+                Logger.getLogger("runtime-resume-failure-test"),
+                List.of(
+                        new RuntimeStopCoordinator.Cleanup("door-examiner", () -> {
+                            calls.add("resume-door-examiner");
+                            throw new IllegalStateException("loi gia lap");
+                        }),
+                        new RuntimeStopCoordinator.Cleanup("doors", () -> calls.add("resume-doors"))),
+                List.of(
+                        new RuntimeStopCoordinator.Cleanup("door-examiner", () -> calls.add("cleanup-door-examiner")),
+                        new RuntimeStopCoordinator.Cleanup("doors", () -> calls.add("cleanup-doors"))));
+
+        coordinator.start();
+        coordinator.stop();
+
+        assertEquals(
+                List.of("resume-door-examiner", "resume-doors", "cleanup-door-examiner", "cleanup-doors"),
+                calls);
+    }
+
+    @Test
     void coordinatorMoiXemRuntimeDaHoatDongDeStartupDisabledVanCleanup() {
         List<String> calls = new ArrayList<>();
         RuntimeStopCoordinator coordinator = new RuntimeStopCoordinator(

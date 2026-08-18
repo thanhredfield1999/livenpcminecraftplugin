@@ -7,8 +7,9 @@ import java.time.Instant;
 
 final class NpcEconomy {
     private static final UUID TOWN_ACCOUNT_UUID = new UUID(0L, 0L);
-    private static final int CARRIED_SLOTS = 2;
-    private static final int STACK_SIZE = 64;
+    static final int CARRIED_SLOTS = 5;
+    static final int CARRIED_STACK_SIZE = 5;
+    static final int CARRIED_DEPOSIT_SLOT_THRESHOLD = 4;
     private final NpcEconomyStore store;
     private final NpcPriceBook priceBook;
     private final java.util.logging.Logger logger;
@@ -41,6 +42,17 @@ final class NpcEconomy {
     boolean addByproduct(UUID npcUuid, String villageId, String itemKey, int amount, long shiftKey) {
         if (!store.writable()) return false;
         return addProduction(npcUuid, villageId, itemKey, amount, shiftKey, false);
+    }
+
+    boolean addCarriedProduction(UUID npcUuid, String itemKey, int amount, long shiftKey) {
+        if (!store.writable() || npcUuid == null || itemKey == null || itemKey.isBlank() || amount <= 0) return false;
+        NpcAccount account = store.account(npcUuid);
+        resetShiftIfNeeded(account, shiftKey);
+        if (account.producedThisShift() + amount > config.maxOutputPerShift()) return false;
+        if (!addCarriedLoot(npcUuid, Map.of(itemKey, amount))) return false;
+        account.setProducedThisShift(account.producedThisShift() + amount);
+        dirty = true;
+        return true;
     }
 
     private boolean addProduction(
@@ -92,8 +104,16 @@ final class NpcEconomy {
         NpcAccount account = store.account(npcUuid);
         NpcAccount town = villageAccount(villageId);
         resetShiftIfNeeded(account, shiftKey);
-        return hasStorageFor(town, (long) output + byproduct)
+        return canCarry(npcUuid, output, byproduct)
                 && account.producedThisShift() + output <= config.maxOutputPerShift();
+    }
+
+    private boolean canCarry(UUID npcUuid, int output, int byproduct) {
+        NpcAccount carried = account(npcUuid);
+        Map<String, Integer> copy = new java.util.LinkedHashMap<>(carried.inventory());
+        copy.merge("__harvest__", output, Integer::sum);
+        return usedCarriedSlots(copy) <= CARRIED_SLOTS
+                && copy.get("__harvest__") <= CARRIED_STACK_SIZE;
     }
 
     boolean addRoleProduction(
@@ -347,7 +367,9 @@ final class NpcEconomy {
         for (Map.Entry<String, Integer> item : loot.entrySet()) {
             if (item.getKey() == null || item.getKey().isBlank() || item.getValue() <= 0) continue;
             int current = updated.getOrDefault(item.getKey(), 0);
-            updated.put(item.getKey(), current + item.getValue());
+            int requested = item.getValue();
+            if (current + requested > CARRIED_STACK_SIZE) return false;
+            updated.put(item.getKey(), current + requested);
             if (usedCarriedSlots(updated) > CARRIED_SLOTS) return false;
         }
         updated.forEach(carried::setQuantity);
@@ -358,6 +380,10 @@ final class NpcEconomy {
     boolean carriedInventoryFull(UUID npcUuid) {
         NpcAccount carried = account(npcUuid);
         return usedCarriedSlots(carried.inventory()) >= CARRIED_SLOTS;
+    }
+
+    int carriedSlotCount(UUID npcUuid) {
+        return usedCarriedSlots(account(npcUuid).inventory());
     }
 
     boolean depositCarriedLoot(UUID npcUuid, String villageId) {
@@ -376,7 +402,7 @@ final class NpcEconomy {
 
     private int usedCarriedSlots(Map<String, Integer> inventory) {
         return inventory.values().stream().filter(amount -> amount > 0)
-                .mapToInt(amount -> (amount + STACK_SIZE - 1) / STACK_SIZE).sum();
+                .mapToInt(amount -> (amount + CARRIED_STACK_SIZE - 1) / CARRIED_STACK_SIZE).sum();
     }
 
     private boolean hasStorageFor(NpcAccount account, long amount) {
@@ -398,14 +424,30 @@ final class NpcEconomy {
     }
 
     java.util.List<NpcActivity> activities(String villageId, ResidentRole role, int limit) {
-        return store.activities(villageId, role, Math.clamp(limit, 1, 10));
+        return store.activities(villageId, role, Math.clamp(limit, 1, 32));
+    }
+
+    long totalEarnedMinor(String villageId) {
+        return store.totalEarnedMinor(villageAccountUuid(villageId));
+    }
+
+    long totalSpentMinor(String villageId) {
+        return store.totalSpentMinor(villageAccountUuid(villageId));
+    }
+
+    java.util.Collection<NpcAccount> telemetryAccounts() {
+        return store.accounts().stream().map(NpcAccount::copy).toList();
+    }
+
+    UUID villageAccountUuid(String villageId) {
+        return villageAccountUuidFor(villageId);
     }
 
     NpcActivity latestActivity(UUID npcUuid) {
         return store.latestActivity(npcUuid);
     }
 
-    private UUID villageAccountUuid(String villageId) {
+    private UUID villageAccountUuidFor(String villageId) {
         if (villageId == null || villageId.isBlank()) {
             return TOWN_ACCOUNT_UUID;
         }

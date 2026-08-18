@@ -26,7 +26,7 @@ class GateRouteDiscoveryTest {
         List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
                 new Location(world, 0.5, 64.0, 0.5),
                 new Location(world, 20.5, 64.0, 0.5),
-                List.of(new StoredLocation("world", 5, 64, 0, 0, 0)));
+                List.of(new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
 
         assertTrue(candidates.isEmpty());
         verify(world).isChunkLoaded(0, 0);
@@ -46,8 +46,8 @@ class GateRouteDiscoveryTest {
                 new Location(world, 0.5, 64.0, 0.5),
                 new Location(world, 20.5, 64.0, 0.5),
                 List.of(
-                        new StoredLocation("world", 15, 64, 4, 0, 0),
-                        new StoredLocation("world", 5, 64, 0, 0, 0)));
+                        new NavigationGate(new StoredLocation("world", 15, 64, 4, 0, 0), "FARMER"),
+                        new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
 
         assertEquals(List.of("world:5:64:0", "world:15:64:4"),
                 candidates.stream().map(GateRoute.Candidate::key).toList());
@@ -64,7 +64,7 @@ class GateRouteDiscoveryTest {
         List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
                 new Location(world, 0.5, 64.0, 0.5),
                 new Location(world, 20.5, 64.0, 0.5),
-                List.of(new StoredLocation("world", 5, 64, 0, 0, 0)));
+                List.of(new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
 
         assertTrue(candidates.isEmpty());
     }
@@ -81,7 +81,7 @@ class GateRouteDiscoveryTest {
         List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
                 new Location(world, 0.5, 64.0, 0.5),
                 new Location(world, 4.5, 64.0, 0.5),
-                List.of(new StoredLocation("world", 5, 64, 0, 0, 0)));
+                List.of(new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
 
         assertTrue(candidates.isEmpty());
     }
@@ -98,7 +98,7 @@ class GateRouteDiscoveryTest {
         List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
                 new Location(world, 48.5062, -60.0625, -18.4081),
                 new Location(world, 68.0, -60.0, -21.0),
-                List.of(new StoredLocation("world", 49, 64, -17, 0, 0)));
+                List.of(new NavigationGate(new StoredLocation("world", 49, 64, -17, 0, 0), "FARMER")));
 
         assertTrue(candidates.isEmpty());
     }
@@ -118,9 +118,9 @@ class GateRouteDiscoveryTest {
                 new Location(world, 0.5, 64.0, 0.5),
                 new Location(world, 20.5, 64.0, 0.5),
                 List.of(
-                        new StoredLocation("world", -2, 64, 0, 0, 0),
-                        new StoredLocation("world", 10, 64, 0, 0, 0),
-                        new StoredLocation("world", 22, 64, 0, 0, 0)));
+                        new NavigationGate(new StoredLocation("world", -2, 64, 0, 0, 0), "FARMER"),
+                        new NavigationGate(new StoredLocation("world", 10, 64, 0, 0, 0), "FARMER"),
+                        new NavigationGate(new StoredLocation("world", 22, 64, 0, 0, 0), "FARMER")));
 
         assertEquals(List.of("world:10:64:0"),
                 candidates.stream().map(GateRoute.Candidate::key).toList());
