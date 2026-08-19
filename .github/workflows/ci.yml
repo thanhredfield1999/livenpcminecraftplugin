@@ -1,63 +1,94 @@
-name: LivingNPC CI
+name: LivingNPC CI/CD
 
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
     branches: [main]
   workflow_dispatch:
-    inputs:
-      deploy_controlled:
-        description: 'Run controlled deployment job (requires configured runner)'
-        required: true
-        default: false
-        type: boolean
 
 permissions:
   contents: read
+
+concurrency:
+  group: living-npc-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify:
     name: Test and build
     runs-on: ubuntu-latest
-    timeout-minutes: 15
-
+    timeout-minutes: 20
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
-
+        uses: actions/checkout@v5
       - name: Set up Java 21
-        uses: actions/setup-java@v4
+        uses: actions/setup-java@v5
         with:
           distribution: temurin
           java-version: '21'
-          cache: gradle
-
-      - name: Make Gradle wrapper executable
-        run: chmod +x gradlew
-
-      - name: Verify
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Verify wrapper
+        uses: gradle/actions/wrapper-validation@v2
+      - name: Verify source and build
         run: ./gradlew clean test build --no-daemon --console=plain
-
-      - name: Upload plugin artifact
+      - name: Verify diff whitespace
+        run: git diff --check
+      - name: Generate dependency report
+        run: ./gradlew dependencies --configuration compileClasspath --no-daemon --console=plain > build/compileClasspath.txt
+      - name: Generate SHA-256 checksums
+        shell: bash
+        run: sha256sum build/libs/*.jar | tee build/SHA256SUMS
+      - name: Upload verification artifact
         uses: actions/upload-artifact@v4
         with:
           name: living-npc-plugin-${{ github.sha }}
-          path: build/libs/*.jar
+          path: |
+            build/libs/*.jar
+            build/SHA256SUMS
+            build/compileClasspath.txt
           if-no-files-found: error
           retention-days: 14
 
-  deploy-controlled:
-    name: Deploy controlled server
-    if: github.event_name == 'workflow_dispatch' && inputs.deploy_controlled == true
+  release:
+    name: Publish GitHub release
+    if: startsWith(github.ref, 'refs/tags/v')
     needs: verify
     runs-on: ubuntu-latest
-    environment: controlled
+    timeout-minutes: 10
     permissions:
-      contents: read
+      contents: write
     steps:
-      - name: Explain controlled deployment boundary
+      - name: Checkout tag
+        uses: actions/checkout@v5
+      - name: Download verified artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: living-npc-plugin-${{ github.sha }}
+          path: release
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          echo "Controlled deployment requires repository-specific runner and secret configuration."
-          echo "No production deployment is performed by this workflow."
-          exit 1
+          gh release create "${GITHUB_REF_NAME}" \
+            release/libs/*.jar \
+            release/SHA256SUMS \
+            --title "LivingNPC ${GITHUB_REF_NAME}" \
+            --generate-notes
+
+  controlled-check:
+    name: Manual controlled verification package
+    if: github.event_name == 'workflow_dispatch'
+    needs: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Explain deployment boundary
+        run: |
+          echo "Verified artifact is available from the verify job."
+          echo "No production deployment or server restart is performed by GitHub Actions."
+          echo "Controlled Paper verification requires explicit operator approval and an approved runner."
