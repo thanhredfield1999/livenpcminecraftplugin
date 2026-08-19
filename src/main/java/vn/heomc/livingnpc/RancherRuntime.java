@@ -434,13 +434,14 @@ final class RancherRuntime {
                                 margin, margin);
                         return false;
                     }
-                    gateNavigator.setTarget(legTarget);
+                    if (!MovementService.startSimpleNavigation(
+                            gateNavigator, legTarget, config.navigationSpeedModifier(), 0.0)) return false;
                     net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
-                            .activeParametersAfterTarget(gateNavigator, legTarget, margin);
+                            .activeParametersAfterTarget(gateNavigator, legTarget, 0.0);
                     LivingNavigation.allowDoors(activeParameters)
                             .speedModifier(config.navigationSpeedModifier())
-                            .distanceMargin(margin)
-                            .pathDistanceMargin(margin)
+                            .distanceMargin(0.0)
+                            .pathDistanceMargin(0.0)
                             .destinationTeleportMargin(0.0)
                             .stuckAction((stuckNpc, stuckNavigator) -> false);
                     NavigationDiagnostics.shared().attach(
@@ -548,7 +549,8 @@ final class RancherRuntime {
             NavigationDiagnostics.shared().targetOutOfRange(npc, parameters, operation, target, margin, margin);
             return false;
         }
-        navigator.setTarget(target);
+        if (!MovementService.startSimpleNavigation(
+                navigator, target, config.navigationSpeedModifier(), margin)) return false;
         net.citizensnpcs.api.ai.NavigatorParameters activeParameters = NavigationDiagnostics.shared()
                 .activeParametersAfterTarget(navigator, target, margin);
         NavigationDiagnostics.shared().attach(npc, activeParameters, operation, target, margin, margin);
@@ -650,9 +652,7 @@ final class RancherRuntime {
             NavigationRecovery.Result recovery = NavigationRecovery.recover(
                     npc, target, 2, serverTick, "RANCH_APPROACH", config.navigationRetryBackoffTicks());
             if (recovery == NavigationRecovery.Result.RECOVERED) {
-                navigationTarget = null;
-                navigationFailure = null;
-                return true;
+                navigationFailure = "Đã khôi phục về ô đứng an toàn; chưa xác nhận tới vật nuôi";
             }
             navigationTarget = null;
             nextActionTick = serverTick + config.navigationRetryBackoffTicks();

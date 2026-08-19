@@ -16,7 +16,7 @@ class RancherNavigationArchitectureTest {
         int end = source.indexOf("public boolean navigating()", start);
 
         assertEquals(1, occurrences(
-                source.substring(start, end), "gateNavigator.setTarget(legTarget);"));
+                source.substring(start, end), "MovementService.startSimpleNavigation("));
     }
 
     @Test
@@ -26,7 +26,7 @@ class RancherNavigationArchitectureTest {
         int end = source.indexOf("static double distanceOutsideSquared", start);
 
         assertEquals(1, occurrences(
-                source.substring(start, end), "navigator.setTarget(target);"));
+                source.substring(start, end), "MovementService.startSimpleNavigation("));
     }
 
     @Test
@@ -36,10 +36,16 @@ class RancherNavigationArchitectureTest {
         int end = source.indexOf("public boolean navigating()", start);
         String method = source.substring(start, end);
 
-        int target = method.indexOf("gateNavigator.setTarget(legTarget);");
+        int target = method.indexOf("MovementService.startSimpleNavigation(");
         int active = method.indexOf("activeParametersAfterTarget", target);
         assertTrue(target >= 0 && active > target,
                 "gate leg must configure active local parameters after setTarget");
+        String activeBlock = method.substring(active,
+                Math.min(method.length(), active + 500));
+        assertTrue(activeBlock.contains(".distanceMargin(0.0)"),
+                "gate leg must disable Citizens completion margin on active parameters");
+        assertTrue(activeBlock.contains(".pathDistanceMargin(0.0)"),
+                "gate leg must disable Citizens path cutoff on active parameters");
     }
 
     @Test
@@ -51,7 +57,7 @@ class RancherNavigationArchitectureTest {
         int end = source.indexOf("public boolean navigating()", start);
         String method = source.substring(start, end);
 
-        int target = method.indexOf("navigator.setTarget(legTarget);");
+        int target = method.indexOf("MovementService.startSimpleNavigation(");
         int active = method.indexOf("activeParametersAfterTarget", target);
         assertTrue(target >= 0 && active > target,
                 "waypoint leg must configure active local parameters after setTarget");
