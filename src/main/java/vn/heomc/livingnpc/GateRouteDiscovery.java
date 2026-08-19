@@ -81,9 +81,14 @@ final class GateRouteDiscovery {
         Location second = standingLocation(
                 world, x + facing.getModX(), y, z + facing.getModZ());
         if (first == null || second == null) return null;
-        Location approach = horizontalDistance(current, first) <= horizontalDistance(current, second)
+        Location gateSide = horizontalDistance(current, first) <= horizontalDistance(current, second)
                 ? first : second;
-        Location exit = approach == first ? second : first;
+        Location exit = gateSide == first ? second : first;
+        int outwardX = Integer.signum(gateSide.getBlockX() - x);
+        int outwardZ = Integer.signum(gateSide.getBlockZ() - z);
+        Location approach = standingLocation(
+                world, gateSide.getBlockX() + outwardX, y, gateSide.getBlockZ() + outwardZ);
+        if (approach == null) return null;
         String key = gateKey(world, x, y, z);
         return new GateRoute.Candidate(key, approach, exit);
     }

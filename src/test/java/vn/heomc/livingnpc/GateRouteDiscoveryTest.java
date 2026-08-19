@@ -144,6 +144,25 @@ class GateRouteDiscoveryTest {
                 candidates.stream().map(GateRoute.Candidate::key).toList());
     }
 
+    @Test
+    void approachUsesOneBlockStagingOutsideGate() {
+        World world = mock(World.class);
+        when(world.isChunkLoaded(anyInt(), anyInt())).thenReturn(true);
+        when(world.getName()).thenReturn("world");
+        Block empty = block(Material.AIR, null);
+        when(world.getBlockAt(anyInt(), anyInt(), anyInt())).thenReturn(empty);
+        addGate(world, 5, 64, 0, BlockFace.EAST);
+
+        List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
+                new Location(world, 0.5, 64.0, 0.5),
+                new Location(world, 20.5, 64.0, 0.5),
+                List.of(new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
+
+        assertEquals(1, candidates.size());
+        assertEquals(new Location(world, 3.5, 64.0, 0.5), candidates.get(0).approach());
+        assertEquals(new Location(world, 6.5, 64.0, 0.5), candidates.get(0).exit());
+    }
+
     private static void addGate(World world, int x, int y, int z, BlockFace facing) {
         Gate gateData = mock(Gate.class);
         when(gateData.getFacing()).thenReturn(facing);
@@ -151,6 +170,8 @@ class GateRouteDiscoveryTest {
         when(world.getBlockAt(x, y, z)).thenReturn(gate);
         standing(world, x - facing.getModX(), y, z - facing.getModZ());
         standing(world, x + facing.getModX(), y, z + facing.getModZ());
+        standing(world, x - (2 * facing.getModX()), y, z - (2 * facing.getModZ()));
+        standing(world, x + (2 * facing.getModX()), y, z + (2 * facing.getModZ()));
     }
 
     private static void standing(World world, int x, int y, int z) {
