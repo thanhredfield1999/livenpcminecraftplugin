@@ -219,7 +219,9 @@ class GateRouteCoordinatorTest {
         FakeNavigation navigation = new FakeNavigation();
         GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 20L, 0.75, 1.0);
         GateRoute.Candidate firstGate = candidate(4, 6);
-        GateRoute.Candidate secondGate = candidate(10, 12);
+        GateRoute.Candidate secondGate = new GateRoute.Candidate(
+                "world:11:64:0", location(8.5, 64, 0.5),
+                location(9.5, 64, 0.5), location(11.5, 64, 0.5));
         Location finalTarget = location(18, 64, 0);
 
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
@@ -235,8 +237,23 @@ class GateRouteCoordinatorTest {
                 coordinator.tick(firstGate.exit(), 2L));
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
                 coordinator.tick(firstGate.exit(), 3L));
-        assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.approach()),
+        // FINAL của gate đầu phải đi tới staging gate sau, không nhảy thẳng approach.
+        assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.staging()),
                 navigation.targets);
+        assertEquals(GateRoute.Leg.FINAL, coordinator.currentLeg());
+
+        // Sau khi tới staging, coordinator mới dựng candidate thứ hai và giữ STAGING leg.
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(secondGate.staging(), 4L));
+        assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.staging(), secondGate.staging()),
+                navigation.targets);
+        assertEquals(GateRoute.Leg.STAGING, coordinator.currentLeg());
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(secondGate.staging(), 5L));
+        assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.staging(), secondGate.staging(),
+                secondGate.approach()), navigation.targets);
+        assertEquals(GateRoute.Leg.APPROACH, coordinator.currentLeg());
 
         // Gate 2 can receive open intent only after route rebuild for Gate 1.
         coordinator.gateOpenIntent(secondGate.key());

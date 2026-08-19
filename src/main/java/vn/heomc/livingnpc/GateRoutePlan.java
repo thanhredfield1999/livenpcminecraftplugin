@@ -22,8 +22,10 @@ final class GateRoutePlan {
         if (current != null) return current;
         if (nextCandidateIndex >= candidates.size()) return null;
         int candidateIndex = nextCandidateIndex++;
+        // Candidate kế tiếp phải bắt đầu từ staging. Nhắm thẳng approach ở FINAL leg
+        // sẽ bỏ constraint ngoài gate, rồi route sau quay ngược về staging.
         Location routeTarget = candidateIndex + 1 < candidates.size()
-                ? candidates.get(candidateIndex + 1).approach()
+                ? candidates.get(candidateIndex + 1).staging()
                 : finalTarget;
         current = new GateRoute(candidates.get(candidateIndex), routeTarget);
         attemptedCount++;
