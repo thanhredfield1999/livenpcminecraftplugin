@@ -126,6 +126,24 @@ class GateRouteDiscoveryTest {
                 candidates.stream().map(GateRoute.Candidate::key).toList());
     }
 
+    @Test
+    void findsConfiguredGateOutsideDirectCorridorWhenItMovesTowardGoal() {
+        World world = mock(World.class);
+        when(world.isChunkLoaded(anyInt(), anyInt())).thenReturn(true);
+        when(world.getName()).thenReturn("world");
+        Block empty = block(Material.AIR, null);
+        when(world.getBlockAt(anyInt(), anyInt(), anyInt())).thenReturn(empty);
+        addGate(world, 8, 64, 8, BlockFace.EAST);
+
+        List<GateRoute.Candidate> candidates = GateRouteDiscovery.discover(
+                new Location(world, 0.5, 64.0, 0.5),
+                new Location(world, 20.5, 64.0, 0.5),
+                List.of(new NavigationGate(new StoredLocation("world", 8, 64, 8, 0, 0), "FARMER")));
+
+        assertEquals(List.of("world:8:64:8"),
+                candidates.stream().map(GateRoute.Candidate::key).toList());
+    }
+
     private static void addGate(World world, int x, int y, int z, BlockFace facing) {
         Gate gateData = mock(Gate.class);
         when(gateData.getFacing()).thenReturn(facing);

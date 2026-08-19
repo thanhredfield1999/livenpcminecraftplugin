@@ -13,6 +13,7 @@ import net.citizensnpcs.api.trait.trait.Equipment;
 import net.citizensnpcs.api.trait.trait.Equipment.EquipmentSlot;
 import net.kyori.adventure.text.Component;
 import net.kyori.adventure.text.format.NamedTextColor;
+import org.bukkit.Bukkit;
 import org.bukkit.Location;
 import org.bukkit.Material;
 import org.bukkit.block.Block;
@@ -401,10 +402,28 @@ final class FarmerRuntime {
             return;
         }
         if (phase == FarmerPhase.GOING_TO_PLOT) {
+            if (navigationTarget == null) {
+                if (requiresPlotEntry(npcLocation, plot, definition.plotRadius())) {
+                    if (serverTick >= nextNavigationAttemptTick) {
+                        Location plotEntry = findPlotEntry(plot, npcLocation, definition.plotRadius());
+                        if (plotEntry != null) {
+                            navigate(plotEntry, FarmerPhase.GOING_TO_PLOT, serverTick, config);
+                        }
+                    }
+                } else {
+                    holdHoe();
+                    phase = FarmerPhase.FINDING_WORK;
+                }
+                return;
+            }
             NavigationResult result = navigationResult(serverTick, config);
             if (result == NavigationResult.ARRIVED) {
-                holdHoe();
-                phase = FarmerPhase.FINDING_WORK;
+                if (requiresPlotEntry(npc.getEntity().getLocation(), plot, definition.plotRadius())) {
+                    nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
+                } else {
+                    holdHoe();
+                    phase = FarmerPhase.FINDING_WORK;
+                }
             } else if (result == NavigationResult.FAILED) {
                 phase = FarmerPhase.INACTIVE;
             }
@@ -495,7 +514,7 @@ final class FarmerRuntime {
             return;
         }
         double margin = config.navigationDistanceMargin();
-        if (npc.getEntity().getLocation().distanceSquared(target) <= margin * margin) {
+        if (navigationTargetReached(npc.getEntity().getLocation(), target, margin)) {
             if (npc.getNavigator().isNavigating()) npc.getNavigator().cancelNavigation();
             navigationTarget = null;
             navigationStage = null;
@@ -862,6 +881,7 @@ final class FarmerRuntime {
         }
         boolean actionSucceeded = false;
         boolean produced = false;
+        org.bukkit.block.data.BlockData previousCropData = null;
         if (currentWork.type() == CropWork.Type.HARVEST
                 && CropScanner.isAllowedCrop(block.getType())
                 && block.getType() == currentWork.crop()
@@ -869,6 +889,7 @@ final class FarmerRuntime {
                 && ageable.getAge() == ageable.getMaximumAge()
                 && mutationPolicy.allows(block.getLocation(), MutationType.PLACE)) {
             Ageable replanted = (Ageable) ageable.clone();
+            previousCropData = block.getBlockData().clone();
             replanted.setAge(0);
             block.setBlockData(replanted, true);
             actionSucceeded = true;
@@ -894,6 +915,11 @@ final class FarmerRuntime {
                             npc.getUniqueId(), java.util.Map.of("wheat_seeds", Math.min(seedSurplus, NpcEconomy.CARRIED_STACK_SIZE)))) {
                         pendingDelivery += Math.min(seedSurplus, NpcEconomy.CARRIED_STACK_SIZE);
                     }
+                } else if (previousCropData != null) {
+                    block.setBlockData(previousCropData, true);
+                    actionSucceeded = false;
+                    produced = false;
+                    economyLog("harvest_rollback reason=OUTPUT_REJECTED crop=" + currentWork.crop());
                 }
             }
         }
@@ -1358,6 +1384,10 @@ final class FarmerRuntime {
                 || Math.abs(current.getBlockY() - plot.getBlockY()) > 2;
     }
 
+    static boolean plotEntryReached(Location current, Location plot, int radius) {
+        return !requiresPlotEntry(current, plot, radius);
+    }
+
     private Location findPlotEntry(Location plot, Location current, int radius) {
         int boundedRadius = Math.max(1, radius);
         for (int candidateRadius : new int[] {Math.max(0, boundedRadius - 1), boundedRadius, boundedRadius + 1}) {
@@ -1569,14 +1599,17 @@ final class FarmerRuntime {
         navigationLeaseOwner = leaseOwner;
         Navigator navigator = npc.getNavigator();
         navigator.cancelNavigation();
+        double navigationMargin = targetPhase == FarmerPhase.GOING_TO_BED
+                ? Math.min(config.navigationDistanceMargin(), 1.0)
+                : config.navigationDistanceMargin();
         NavigatorParameters parameters = targetPhase == FarmerPhase.GOING_TO_BED
                 ? LivingNavigation.enterBuildings(navigator.getLocalParameters())
                 : LivingNavigation.allowDoors(navigator.getLocalParameters());
         parameters
                 .speedModifier((float) (config.navigationSpeedModifier()
                         * definition.progress(ResidentRole.FARMER).speedMultiplier()))
-                .distanceMargin(config.navigationDistanceMargin())
-                .pathDistanceMargin(config.navigationDistanceMargin())
+                .distanceMargin(navigationMargin)
+                .pathDistanceMargin(navigationMargin)
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
         String operation = targetPhase.name();
@@ -1591,7 +1624,7 @@ final class FarmerRuntime {
         List<GateRoute.Candidate> gates = GateRouteDiscovery.discover(
                 current, target, configuredGates, definition.activeRole());
         if (!gates.isEmpty()) {
-            if (startGateRoute(navigator, target, gates, operation, serverTick, config)) {
+            if (startGateRoute(navigator, target, gates, operation, serverTick, config, navigationMargin)) {
                 navigationTarget = target.clone();
                 navigationStartedTick = serverTick;
                 phase = targetPhase;
@@ -1601,9 +1634,14 @@ final class FarmerRuntime {
             nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
             return false;
         }
+        if (targetPhase == FarmerPhase.GOING_TO_PLOT && !configuredGates.isEmpty()) {
+            releaseNavigationLease();
+            nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
+            return false;
+        }
         if ((targetPhase == FarmerPhase.GOING_HOME || targetPhase == FarmerPhase.GOING_TO_BED)
                 && current.distance(target) > WaypointRoutePlanner.DEFAULT_SEGMENT_BLOCKS) {
-            if (startWaypointRoute(navigator, current, target, operation, serverTick, config, parameters)) {
+            if (startWaypointRoute(navigator, current, target, operation, serverTick, config, parameters, navigationMargin)) {
                 navigationTarget = target.clone();
                 navigationStartedTick = serverTick;
                 phase = targetPhase;
@@ -1616,25 +1654,29 @@ final class FarmerRuntime {
         if (!NavigationDiagnostics.shared().targetInRange(current, target, parameters.range())) {
             NavigationDiagnostics.shared().targetOutOfRange(
                 npc, parameters, operation, target,
-                    config.navigationDistanceMargin(), config.navigationDistanceMargin());
+                    navigationMargin, navigationMargin);
             releaseNavigationLease();
             nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
             return false;
         }
-        navigator.setTarget(target);
+        if (!MovementService.startSimpleNavigation(
+                navigator, target,
+                (float) (config.navigationSpeedModifier()
+                        * definition.progress(ResidentRole.FARMER).speedMultiplier()),
+                        navigationMargin)) return false;
         NavigatorParameters activeParameters = NavigationDiagnostics.shared()
-                .activeParametersAfterTarget(navigator, target, config.navigationDistanceMargin());
+                .activeParametersAfterTarget(navigator, target, navigationMargin);
         activeParameters
                 .speedModifier((float) (config.navigationSpeedModifier()
                         * definition.progress(ResidentRole.FARMER).speedMultiplier()))
-                .distanceMargin(config.navigationDistanceMargin())
-                .pathDistanceMargin(config.navigationDistanceMargin())
+                .distanceMargin(navigationMargin)
+                .pathDistanceMargin(navigationMargin)
                 .destinationTeleportMargin(0.0)
                 .stuckAction((stuckNpc, stuckNavigator) -> false);
         LivingNavigation.allowDoors(activeParameters);
         NavigationDiagnostics.shared().attach(
                 npc, activeParameters, operation, target,
-                config.navigationDistanceMargin(), config.navigationDistanceMargin());
+                navigationMargin, navigationMargin);
         navigationTarget = target.clone();
         navigationStartedTick = serverTick;
         phase = targetPhase;
@@ -1643,13 +1685,13 @@ final class FarmerRuntime {
 
     private boolean startWaypointRoute(
             Navigator navigator, Location current, Location target, String operation,
-            long serverTick, LivingNpcConfig config, NavigatorParameters parameters) {
+            long serverTick, LivingNpcConfig config, NavigatorParameters parameters, double navigationMargin) {
         List<Location> waypoints = WaypointRoutePlanner.plan(
                 current, target, WaypointRoutePlanner.DEFAULT_SEGMENT_BLOCKS);
         if (!RuntimeChunkAvailability.loadedRoute(waypoints)) {
             NavigationDiagnostics.shared().targetOutOfRange(
                     npc, parameters, operation + "_WAYPOINT", target,
-                    config.navigationDistanceMargin(), config.navigationDistanceMargin());
+                    navigationMargin, navigationMargin);
             return false;
         }
         waypointRouteCoordinator = new WaypointRouteCoordinator(
@@ -1657,14 +1699,16 @@ final class FarmerRuntime {
                     @Override public boolean start(Location legTarget) {
                         if (!NavigationDiagnostics.shared().targetInRange(
                                 npc.getEntity().getLocation(), legTarget, parameters.range())) return false;
-                        navigator.setTarget(legTarget);
+                        if (!MovementService.startSimpleNavigation(
+                                navigator, legTarget, config.navigationSpeedModifier(),
+                                navigationMargin)) return false;
                         NavigatorParameters activeParameters = NavigationDiagnostics.shared()
                                 .activeParametersAfterTarget(
-                                        navigator, legTarget, config.navigationDistanceMargin());
+                                        navigator, legTarget, navigationMargin);
                         LivingNavigation.allowDoors(activeParameters)
                                 .speedModifier(config.navigationSpeedModifier())
-                                .distanceMargin(config.navigationDistanceMargin())
-                                .pathDistanceMargin(config.navigationDistanceMargin())
+                                .distanceMargin(navigationMargin)
+                                .pathDistanceMargin(navigationMargin)
                                 .destinationTeleportMargin(0.0)
                                 .stuckAction((stuckNpc, stuckNavigator) -> false);
                         NavigationDiagnostics.shared().attach(
@@ -1674,18 +1718,48 @@ final class FarmerRuntime {
                     }
                     @Override public boolean navigating() { return navigator.isNavigating(); }
                     @Override public void cancel() { navigator.cancelNavigation(); }
-                }, waypoints, config.navigationDistanceMargin(), config.navigationTimeoutTicks());
+                    @Override public boolean recover(Location current, Location legTarget, int radius) {
+                        NavigationRecovery.Result result = NavigationRecovery.recover(
+                                npc, legTarget, radius, org.bukkit.Bukkit.getCurrentTick(),
+                                operation + "_WAYPOINT_RECOVERY", config.navigationRetryBackoffTicks());
+                        return result == NavigationRecovery.Result.RECOVERED;
+                    }
+                }, waypoints, navigationMargin, config.navigationTimeoutTicks());
         return waypointRouteCoordinator.start(serverTick)
                 == WaypointRouteCoordinator.Result.IN_PROGRESS;
     }
 
+    private static String compactLocation(Location location) {
+        if (location == null || location.getWorld() == null) return "null";
+        return location.getWorld().getName() + ":"
+                + String.format(java.util.Locale.ROOT, "%.3f,%.3f,%.3f",
+                        location.getX(), location.getY(), location.getZ());
+    }
+
     private boolean startGateRoute(
             Navigator navigator, Location target, List<GateRoute.Candidate> gates,
-            String operation, long serverTick, LivingNpcConfig config) {
+            String operation, long serverTick, LivingNpcConfig config, double navigationMargin) {
+        java.util.logging.Logger.getLogger("LivingNPC").info(
+                "NPC_GATE_PLAN uuid=" + npc.getUniqueId() + " operation=" + operation
+                        + " finalTarget=" + compactLocation(target) + " candidates="
+                        + gates.stream().limit(4).map(candidate -> candidate.key()
+                                + "[approach=" + compactLocation(candidate.approach())
+                                + ",exit=" + compactLocation(candidate.exit()) + "]")
+                        .collect(java.util.stream.Collectors.joining(";")));
         gateRouteCoordinator = new GateRouteCoordinator(
                 new GateRouteCoordinator.Navigation() {
                     @Override
                     public boolean start(Location legTarget, double margin) {
+                        return start(legTarget, margin, null);
+                    }
+
+                    @Override
+                    public boolean start(Location legTarget, double margin, GateRoute.Leg leg) {
+                        return start(legTarget, margin, leg, 0L);
+                    }
+
+                    @Override
+                    public boolean start(Location legTarget, double margin, GateRoute.Leg leg, long generation) {
                         NavigatorParameters parameters = navigator.getLocalParameters();
                         Location current = npc.getEntity().getLocation();
                         if (!NavigationDiagnostics.shared().targetInRange(current, legTarget, parameters.range())) {
@@ -1694,11 +1768,24 @@ final class FarmerRuntime {
                                     margin, margin);
                             return false;
                         }
-                        navigator.setTarget(legTarget);
+                        // Gate leg cần Citizens đi tới exact target; distance/path margin của Citizens
+                        // nếu dùng 0.75 sẽ kết thúc tại block-goal trước ô đứng thật.
+                        if (!MovementService.startSimpleNavigation(
+                                navigator, legTarget, config.navigationSpeedModifier(), 0.0)) return false;
                         NavigatorParameters activeParameters = NavigationDiagnostics.shared()
-                                .activeParametersAfterTarget(navigator, legTarget, margin);
+                                .activeParametersAfterTarget(navigator, legTarget, 0.0);
+                        activeParameters
+                                .speedModifier(config.navigationSpeedModifier())
+                                .distanceMargin(0.0)
+                                .pathDistanceMargin(0.0)
+                                .destinationTeleportMargin(0.0)
+                                .stuckAction((stuckNpc, stuckNavigator) -> false);
+                        LivingNavigation.allowDoors(activeParameters);
+                        String legOperation = operation + "_GATE_"
+                                + (leg == null ? "UNKNOWN" : leg.name())
+                                + "_GEN_" + generation;
                         NavigationDiagnostics.shared().attach(
-                                npc, activeParameters, operation + "_GATE", legTarget,
+                                npc, activeParameters, legOperation, legTarget,
                                 margin, margin);
                         return true;
                     }
@@ -1714,6 +1801,18 @@ final class FarmerRuntime {
                     }
 
                     @Override
+                    public boolean recover(Location current, Location legTarget, int radius) {
+                        NavigationRecovery.Result result = NavigationRecovery.recover(
+                                npc, legTarget, radius, org.bukkit.Bukkit.getCurrentTick(),
+                                operation + "_GATE_RECOVERY", config.navigationRetryBackoffTicks());
+                        return result == NavigationRecovery.Result.RECOVERED;
+                    }
+
+                    private Location routeTargetForRecovery() {
+                        return npc.getEntity().getLocation();
+                    }
+
+                    @Override
                     public boolean requestGate(String gateKey) {
                         return GatePassageService.request(npc, gateKey);
                     }
@@ -1723,7 +1822,7 @@ final class FarmerRuntime {
                         GatePassageService.release(npc, gateKey);
                     }
                 },
-                config.navigationTimeoutTicks(), config.navigationDistanceMargin(), 1.0);
+                config.navigationTimeoutTicks(), navigationMargin, 1.0);
         GateRouteCoordinator.Result result = gateRouteCoordinator.start(
                 npc.getEntity().getLocation(), target, gates, serverTick);
         if (result == GateRouteCoordinator.Result.IN_PROGRESS) return true;
@@ -1763,7 +1862,9 @@ final class FarmerRuntime {
             }
             return navigationFailed(serverTick, config);
         }
-        double margin = config.navigationDistanceMargin();
+        double margin = phase == FarmerPhase.GOING_TO_BED
+                ? Math.min(config.navigationDistanceMargin(), 1.0)
+                : config.navigationDistanceMargin();
         if (navigationTargetReached(npc.getEntity().getLocation(), navigationTarget, margin)) {
             navigationTarget = null;
             navigationStage = null;
@@ -1776,10 +1877,7 @@ final class FarmerRuntime {
             NavigationRecovery.Result recovery = NavigationRecovery.recover(
                     npc, navigationTarget, 2, serverTick, phase.name(), config.navigationRetryBackoffTicks());
             if (recovery == NavigationRecovery.Result.RECOVERED) {
-                navigationTarget = null;
-                navigationStage = null;
-                releaseNavigationLease();
-                return NavigationResult.ARRIVED;
+                nextNavigationAttemptTick = serverTick + config.navigationRetryBackoffTicks();
             }
             return navigationFailed(serverTick, config);
         }

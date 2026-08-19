@@ -16,9 +16,21 @@ final class GateRouteCoordinator {
     interface Navigation {
         boolean start(Location target, double margin);
 
+        default boolean start(Location target, double margin, GateRoute.Leg leg) {
+            return start(target, margin, leg, 0L);
+        }
+
+        default boolean start(Location target, double margin, GateRoute.Leg leg, long generation) {
+            return start(target, margin);
+        }
+
         boolean navigating();
 
         void cancel();
+
+        default boolean recover(Location current, Location target, int radius) {
+            return false;
+        }
 
         default void releaseGate(String gateKey) {
         }
@@ -38,6 +50,17 @@ final class GateRouteCoordinator {
     private GateRoute route;
     private long legStartTick;
     private int legRestartCount;
+    private long retryNotBeforeTick = -1L;
+    private long navigationGeneration;
+
+    long navigationGeneration() {
+        return navigationGeneration;
+    }
+
+    GateRoute.Leg currentLeg() {
+        return route == null ? null : route.leg();
+    }
+
 
     GateRouteCoordinator(
             Navigation navigation, long timeoutTicks, double horizontalMargin, double verticalTolerance) {
@@ -55,8 +78,9 @@ final class GateRouteCoordinator {
     Result start(
             Location current, Location finalTarget, List<GateRoute.Candidate> candidates, long serverTick) {
         if (active()) cancel();
-        if (current == null || finalTarget == null || candidates == null || candidates.isEmpty()
-                || current.getWorld() == null || !current.getWorld().equals(finalTarget.getWorld())) {
+        if (!finite(current) || !finite(finalTarget) || candidates == null || candidates.isEmpty()
+                || candidates.stream().anyMatch(java.util.Objects::isNull)
+                || !current.getWorld().equals(finalTarget.getWorld())) {
             return Result.FAILED;
         }
         plan = new GateRoutePlan(candidates, finalTarget);
@@ -65,6 +89,7 @@ final class GateRouteCoordinator {
 
     Result tick(Location current, long serverTick) {
         if (!active()) return Result.IDLE;
+        if (retryNotBeforeTick >= 0L && serverTick < retryNotBeforeTick) return Result.IN_PROGRESS;
         if (route.advanceIfReached(current, horizontalMargin, verticalTolerance, serverTick)) {
             if (route.leg() == GateRoute.Leg.COMPLETE) {
                 navigation.cancel();
@@ -93,7 +118,16 @@ final class GateRouteCoordinator {
         }
         if (serverTick - legStartTick >= timeoutTicks) {
             navigation.cancel();
-            return rejectCandidateAndContinue(serverTick);
+            if (legRestartCount >= MAX_LEG_RESTARTS) {
+                legRestartCount = 0;
+                if (navigation.recover(current, route.legTarget(), 2) && restartLeg(serverTick)) return Result.IN_PROGRESS;
+                navigation.releaseGate(route.candidate().key());
+                retryNotBeforeTick = serverTick + timeoutTicks;
+                legStartTick = serverTick;
+                return Result.IN_PROGRESS;
+            }
+            legRestartCount++;
+            return restartLeg(serverTick) ? Result.IN_PROGRESS : rejectCandidateAndContinue(serverTick);
         }
         if (!navigation.navigating()) {
             if (route.leg() == GateRoute.Leg.APPROACH
@@ -101,8 +135,12 @@ final class GateRouteCoordinator {
                 if (advanceApproachAndRequestGate(current, serverTick)) return Result.IN_PROGRESS;
             }
             if (legRestartCount >= MAX_LEG_RESTARTS) {
+                legRestartCount = 0;
+                if (navigation.recover(current, route.legTarget(), 2) && restartLeg(serverTick)) return Result.IN_PROGRESS;
                 navigation.releaseGate(route.candidate().key());
-                return rejectCandidateAndContinue(serverTick);
+                retryNotBeforeTick = serverTick + timeoutTicks;
+                legStartTick = serverTick;
+                return Result.IN_PROGRESS;
             }
             legRestartCount++;
             return restartLeg(serverTick) ? Result.IN_PROGRESS : rejectCandidateAndContinue(serverTick);
@@ -151,7 +189,8 @@ final class GateRouteCoordinator {
         Location target = route.legTarget();
         if (target == null) return false;
         double margin = GateRoute.effectiveMargin(route.leg(), horizontalMargin);
-        if (!navigation.start(target.clone(), margin)) return false;
+        navigationGeneration++;
+        if (!navigation.start(target.clone(), margin, route.leg(), navigationGeneration)) return false;
         legStartTick = serverTick;
         legRestartCount = 0;
         return true;
@@ -161,13 +200,14 @@ final class GateRouteCoordinator {
         Location target = route.legTarget();
         if (target == null) return false;
         double margin = GateRoute.effectiveMargin(route.leg(), horizontalMargin);
-        boolean started = navigation.start(target.clone(), margin);
+        navigationGeneration++;
+        boolean started = navigation.start(target.clone(), margin, route.leg(), navigationGeneration);
         if (started) legStartTick = serverTick;
         return started;
     }
 
     private boolean advanceApproachAndRequestGate(Location current, long serverTick) {
-        if (!route.advanceIfReached(current, Math.max(horizontalMargin, 2.25), verticalTolerance, serverTick)) {
+        if (!route.advanceIfReached(current, horizontalMargin, verticalTolerance, serverTick)) {
             return false;
         }
         if (route.leg() != GateRoute.Leg.EXIT || route.gateOpenObserved()) return false;
@@ -179,6 +219,13 @@ final class GateRouteCoordinator {
         }
         route.observeGateOpened(route.candidate().key());
         return startLeg(serverTick);
+    }
+
+    private static boolean finite(Location location) {
+        return location != null && location.getWorld() != null
+                && Double.isFinite(location.getX())
+                && Double.isFinite(location.getY())
+                && Double.isFinite(location.getZ());
     }
 
     private void clear() {

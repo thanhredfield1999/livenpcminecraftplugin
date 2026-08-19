@@ -71,19 +71,26 @@ final class WaypointRouteCoordinator {
         boolean start(Location target);
         boolean navigating();
         void cancel();
+
+        default boolean recover(Location current, Location target, int radius) {
+            return false;
+        }
     }
 
     private final Navigation navigation;
     private final List<Location> waypoints;
     private final double margin;
     private int index;
+    private int recoveryAttempts;
     private long startedTick;
     private final long timeoutTicks;
 
     WaypointRouteCoordinator(Navigation navigation, List<Location> waypoints,
             double margin, long timeoutTicks) {
         if (navigation == null || waypoints == null || !Double.isFinite(margin) || margin < 0.0
-                || timeoutTicks <= 0L) {
+                || timeoutTicks <= 0L
+                || waypoints.stream().anyMatch(location -> location == null || !location.isFinite()
+                        || location.getWorld() == null)) {
             throw new IllegalArgumentException("Waypoint coordinator cần cấu hình hợp lệ");
         }
         this.navigation = navigation;
@@ -106,6 +113,7 @@ final class WaypointRouteCoordinator {
         if (FarmerRuntime.navigationTargetReached(current, waypoints.get(index), margin)) {
             navigation.cancel();
             index++;
+            recoveryAttempts = 0;
             if (index >= waypoints.size()) return Result.COMPLETE;
             if (!startCurrent(tick)) {
                 navigation.cancel();
@@ -115,6 +123,11 @@ final class WaypointRouteCoordinator {
         }
         if (tick - startedTick >= timeoutTicks || !navigation.navigating()) {
             navigation.cancel();
+            if (recoveryAttempts < 1
+                    && navigation.recover(current, waypoints.get(index), 2)) {
+                recoveryAttempts++;
+                if (startCurrent(tick)) return Result.IN_PROGRESS;
+            }
             return Result.FAILED;
         }
         return Result.IN_PROGRESS;

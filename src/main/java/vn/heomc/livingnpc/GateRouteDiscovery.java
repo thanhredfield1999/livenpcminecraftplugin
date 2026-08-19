@@ -53,10 +53,9 @@ final class GateRouteDiscovery {
             int z = (int) Math.floor(location.z());
             boolean currentGate = horizontalDistance(current,
                     new Location(world, x + 0.5, y, z + 0.5)) <= 1.5;
-            if (y < minY || y > maxY || (!liesBetween(current, target, x + 0.5, z + 0.5)
-                    && !currentGate)
-                    || distanceToSegmentSquared(x + 0.5, z + 0.5, current, target)
-                    > CORRIDOR_RADIUS * CORRIDOR_RADIUS || !world.isChunkLoaded(x >> 4, z >> 4)) continue;
+            if (y < minY || y > maxY || (!currentGate
+                    && horizontalDistance(current, new Location(world, x + 0.5, y, z + 0.5)) > MAX_ROUTE_DISTANCE)
+                    || !world.isChunkLoaded(x >> 4, z >> 4)) continue;
             Block block = world.getBlockAt(x, y, z);
             if (!(block.getBlockData() instanceof Gate gate)) continue;
             GateRoute.Candidate candidate = candidate(world, x, y, z, gate.getFacing(), current);

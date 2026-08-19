@@ -25,6 +25,12 @@ class WaypointRouteCoordinatorTest {
                 () -> new WaypointRouteCoordinator(navigation, waypoints, Double.NaN, 10L));
         assertThrows(IllegalArgumentException.class,
                 () -> new WaypointRouteCoordinator(navigation, waypoints, 0.75, 0L));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WaypointRouteCoordinator(navigation,
+                        java.util.Arrays.asList((Location) null), 0.75, 10L));
+        assertThrows(IllegalArgumentException.class,
+                () -> new WaypointRouteCoordinator(navigation,
+                        List.of(new Location(world, Double.POSITIVE_INFINITY, 64, 0)), 0.75, 10L));
     }
 
     @Test
@@ -82,11 +88,32 @@ class WaypointRouteCoordinatorTest {
         assertEquals(1, navigation.cancelCount);
     }
 
+    @Test
+    void stopsOnceAndRestartsAfterLocalRecovery() {
+        FakeNavigation navigation = new FakeNavigation();
+        navigation.navigating = false;
+        navigation.recover = true;
+        World world = Mockito.mock(World.class);
+        Location current = new Location(world, 0, 64, 0);
+        Location target = new Location(world, 8, 64, 0);
+        WaypointRouteCoordinator coordinator = new WaypointRouteCoordinator(
+                navigation, List.of(target), 0.75, 10L);
+
+        assertEquals(WaypointRouteCoordinator.Result.IN_PROGRESS, coordinator.start(100L));
+        navigation.navigating = false;
+        assertEquals(WaypointRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.tick(current, 101L));
+        assertEquals(1, navigation.recoverCount);
+        assertEquals(2, navigation.targets.size());
+    }
+
     private static final class FakeNavigation implements WaypointRouteCoordinator.Navigation {
         private final List<Location> targets = new ArrayList<>();
         private int cancelCount;
         private boolean navigating;
         private boolean failStart;
+        private boolean recover;
+        private int recoverCount;
 
         @Override
         public boolean start(Location target) {
@@ -102,6 +129,13 @@ class WaypointRouteCoordinatorTest {
         @Override
         public boolean navigating() {
             return navigating;
+        }
+
+        @Override
+        public boolean recover(Location current, Location target, int radius) {
+            recoverCount++;
+            navigating = recover;
+            return recover;
         }
 
         @Override
