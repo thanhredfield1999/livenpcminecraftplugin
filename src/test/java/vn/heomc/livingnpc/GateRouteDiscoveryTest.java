@@ -159,7 +159,8 @@ class GateRouteDiscoveryTest {
                 List.of(new NavigationGate(new StoredLocation("world", 5, 64, 0, 0, 0), "FARMER")));
 
         assertEquals(1, candidates.size());
-        assertEquals(new Location(world, 3.5, 64.0, 0.5), candidates.get(0).approach());
+        assertEquals(new Location(world, 3.5, 64.0, 0.5), candidates.get(0).staging());
+        assertEquals(new Location(world, 4.5, 64.0, 0.5), candidates.get(0).approach());
         assertEquals(new Location(world, 6.5, 64.0, 0.5), candidates.get(0).exit());
     }
 

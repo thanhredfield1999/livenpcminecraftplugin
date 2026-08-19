@@ -8,21 +8,23 @@ final class GateRoute {
     private static final int EXIT_CONFIRMATION_TICKS = 2;
 
     enum Leg {
+        STAGING,
         APPROACH,
         EXIT,
         FINAL,
         COMPLETE
     }
 
-    record Candidate(String key, Location approach, Location exit) {
+    record Candidate(String key, Location staging, Location approach, Location exit) {
         Candidate {
-            if (key == null || approach == null || exit == null) {
-                throw new IllegalArgumentException("Gate candidate phải có key, approach và exit");
+            if (key == null || staging == null || approach == null || exit == null) {
+                throw new IllegalArgumentException("Gate candidate phải có key, staging, approach và exit");
             }
-            if (approach.getWorld() == null || !approach.getWorld().equals(exit.getWorld())) {
+            if (staging.getWorld() == null || !staging.getWorld().equals(approach.getWorld())
+                    || !staging.getWorld().equals(exit.getWorld())) {
                 throw new IllegalArgumentException("Gate candidate phải nằm trong cùng một world");
             }
-            if (!finite(approach) || !finite(exit)) {
+            if (!finite(staging) || !finite(approach) || !finite(exit)) {
                 throw new IllegalArgumentException("Gate candidate phải có tọa độ hữu hạn");
             }
             double deltaX = exit.getX() - approach.getX();
@@ -30,6 +32,16 @@ final class GateRoute {
             if (Math.hypot(deltaX, deltaZ) < EXIT_CLEARANCE * 2.0) {
                 throw new IllegalArgumentException("Gate candidate không đủ khoảng cách crossing");
             }
+        }
+
+        Candidate(String key, Location approach, Location exit) {
+            this(key, approach, approach, exit);
+        }
+
+        boolean hasDistinctStaging() {
+            return Math.abs(staging.getX() - approach.getX()) > 1.0E-9
+                    || Math.abs(staging.getY() - approach.getY()) > 1.0E-9
+                    || Math.abs(staging.getZ() - approach.getZ()) > 1.0E-9;
         }
 
         private static boolean finite(Location location) {
@@ -41,7 +53,7 @@ final class GateRoute {
 
     private final Candidate candidate;
     private final Location finalTarget;
-    private Leg leg = Leg.APPROACH;
+    private Leg leg;
     private boolean gateOpenObserved;
     private boolean entrySideObserved;
     private int exitSideConfirmations;
@@ -58,6 +70,7 @@ final class GateRoute {
         }
         this.candidate = candidate;
         this.finalTarget = finalTarget.clone();
+        this.leg = candidate.hasDistinctStaging() ? Leg.STAGING : Leg.APPROACH;
     }
 
     Leg leg() {
@@ -66,6 +79,7 @@ final class GateRoute {
 
     Location legTarget() {
         return switch (leg) {
+            case STAGING -> candidate.staging();
             case APPROACH -> candidate.approach();
             case EXIT -> candidate.exit();
             case FINAL -> finalTarget;
@@ -74,7 +88,7 @@ final class GateRoute {
     }
 
     static double effectiveMargin(Leg leg, double requestedMargin) {
-        return leg == Leg.APPROACH || leg == Leg.EXIT
+        return leg == Leg.STAGING || leg == Leg.APPROACH || leg == Leg.EXIT
                 ? Math.min(requestedMargin, CROSSING_MARGIN)
                 : requestedMargin;
     }
@@ -88,7 +102,9 @@ final class GateRoute {
         Location target = legTarget();
         if (target == null) return false;
         double crossingMargin = effectiveMargin(leg, margin);
-        if (leg == Leg.APPROACH) {
+        if (leg == Leg.STAGING) {
+            if (!reached(current, target, crossingMargin, verticalTolerance, false)) return false;
+        } else if (leg == Leg.APPROACH) {
             double gateProgress = signedGateProgress(current);
             entrySideObserved |= gateProgress <= -EXIT_CLEARANCE;
             if (!entrySideObserved || gateProgress > -EXIT_CLEARANCE
@@ -110,6 +126,7 @@ final class GateRoute {
             return false;
         }
         leg = switch (leg) {
+            case STAGING -> Leg.APPROACH;
             case APPROACH -> Leg.EXIT;
             case EXIT -> Leg.FINAL;
             case FINAL -> Leg.COMPLETE;
@@ -127,7 +144,7 @@ final class GateRoute {
     }
 
     void resetToApproach() {
-        leg = Leg.APPROACH;
+        leg = candidate.hasDistinctStaging() ? Leg.STAGING : Leg.APPROACH;
         exitSideConfirmations = 0;
         exitConfirmationTickObserved = false;
     }

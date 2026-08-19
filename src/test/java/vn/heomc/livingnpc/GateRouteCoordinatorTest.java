@@ -29,6 +29,29 @@ class GateRouteCoordinatorTest {
     }
 
     @Test
+    void configuredStagingMustCompleteBeforeApproachCanOpenGate() {
+        FakeNavigation navigation = new FakeNavigation();
+        GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 20L, 0.75, 1.0);
+        GateRoute.Candidate gate = new GateRoute.Candidate(
+                "world:5:64:0", location(3.5, 64, 0.5), location(4.5, 64, 0.5), location(6.5, 64, 0.5));
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+                coordinator.start(location(0, 64, 0.5), location(10, 64, 0.5), List.of(gate), 0L));
+        assertEquals(List.of(gate.staging()), navigation.targets);
+        assertEquals(GateRoute.Leg.STAGING, coordinator.currentLeg());
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS, coordinator.tick(gate.staging(), 1L));
+        assertEquals(List.of(gate.staging(), gate.approach()), navigation.targets);
+        assertEquals(GateRoute.Leg.APPROACH, coordinator.currentLeg());
+        assertEquals(0, navigation.requestCount);
+
+        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS, coordinator.tick(gate.approach(), 2L));
+        assertEquals(List.of(gate.staging(), gate.approach(), gate.exit()), navigation.targets);
+        assertEquals(1, navigation.requestCount);
+        assertEquals(GateRoute.Leg.EXIT, coordinator.currentLeg());
+    }
+
+    @Test
     void timeoutSauMotLanRestartThuRecoveryLocalRoiStartLaiLeg() {
         FakeNavigation navigation = new FakeNavigation();
         navigation.recoverResult = true;
@@ -401,6 +424,7 @@ class GateRouteCoordinatorTest {
         private boolean failNextStart;
         private boolean recoverResult;
         private int recoverCount;
+        private int requestCount;
 
         @Override
         public boolean start(Location target, double margin) {
@@ -448,6 +472,7 @@ class GateRouteCoordinatorTest {
 
         @Override
         public boolean requestGate(String gateKey) {
+            requestCount++;
             return true;
         }
     }
