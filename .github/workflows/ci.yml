@@ -32,8 +32,6 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
-      - name: Verify wrapper
-        uses: gradle/actions/wrapper-validation@v2
       - name: Verify source and build
         run: ./gradlew clean test build --no-daemon --console=plain
       - name: Verify diff whitespace
