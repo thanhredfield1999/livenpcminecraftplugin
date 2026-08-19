@@ -67,6 +67,19 @@ class GateRouteTest {
     }
 
     @Test
+    void gateApproachKhongNhanBlockGoalFallback() {
+        World world = mock(World.class);
+        GateRoute route = new GateRoute(
+                new GateRoute.Candidate("world:10:64:0",
+                        new Location(world, 9.5, 64.0, 0.5),
+                        new Location(world, 11.5, 64.0, 0.5)),
+                new Location(world, 20.5, 64.0, 0.5));
+
+        assertFalse(route.advanceIfReached(new Location(world, 9.0, 64.0, 0.5), 0.3, 1.0, 1L));
+        assertEquals(GateRoute.Leg.APPROACH, route.leg());
+    }
+
+    @Test
     void exitLegRequiresEntrySideObservationBeforeExitSideConfirmation() {
         World world = mock(World.class);
         Location approach = new Location(world, 48.5, 64.0, -17.5);
@@ -111,7 +124,7 @@ class GateRouteTest {
     }
 
     @Test
-    void approachAdvanceKhiCitizensHoanTatTaiBlockGoalCuaTargetTrungTam() {
+    void approachKhongAdvanceKhiCitizensChiDatBlockGoalNhungChuaDenApproachThat() {
         World world = mock(World.class);
         // Tọa độ nguyên văn từ NPC_NAV_END operation=GOING_TO_PLOT_GATE reason=COMPLETED
         // của Farmer Steve lúc 18:10:55 ngày 2026-08-16 trong latest.log.
@@ -124,8 +137,8 @@ class GateRouteTest {
         // Citizens dừng ở đây với distanceMargin=0.75: cách block-goal (60,-60,-1) là 0.7421,
         // nhưng cách tọa độ tâm block (60.5,-60,-0.5) là 1.2956.
         Location completed = new Location(world, 59.2656, -60.0, -0.8936);
-        assertTrue(route.advanceIfReached(completed, 0.75, 1.0, 1L));
-        assertEquals(GateRoute.Leg.EXIT, route.leg());
+        assertFalse(route.advanceIfReached(completed, 0.75, 1.0, 1L));
+        assertEquals(GateRoute.Leg.APPROACH, route.leg());
     }
 
     @Test
@@ -141,6 +154,18 @@ class GateRouteTest {
                 "nan", approach, new Location(world, Double.NaN, 64.0, 10.0)));
         assertThrows(IllegalArgumentException.class, () -> new GateRoute.Candidate(
                 "infinite", approach, new Location(world, Double.POSITIVE_INFINITY, 64.0, 10.0)));
+    }
+
+    @Test
+    void finalTargetKhacWorldHoacKhongHuuHanBiTuChoiSom() {
+        World world = mock(World.class);
+        World otherWorld = mock(World.class);
+        GateRoute.Candidate candidate = candidate(world, "safe", 10);
+
+        assertThrows(IllegalArgumentException.class, () -> new GateRoute(
+                candidate, new Location(otherWorld, 20.5, 64.0, 0.5)));
+        assertThrows(IllegalArgumentException.class, () -> new GateRoute(
+                candidate, new Location(world, Double.NaN, 64.0, 0.5)));
     }
 
     @Test
