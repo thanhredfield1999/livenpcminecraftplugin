@@ -32,6 +32,8 @@ jobs:
         uses: gradle/actions/setup-gradle@v4
         with:
           cache-read-only: ${{ github.event_name == 'pull_request' }}
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
       - name: Verify source and build
         run: ./gradlew clean test build --no-daemon --console=plain
       - name: Verify diff whitespace
