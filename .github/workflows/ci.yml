@@ -1,0 +1,63 @@
+name: LivingNPC CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      deploy_controlled:
+        description: 'Run controlled deployment job (requires configured runner)'
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: Test and build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Java 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: gradle
+
+      - name: Make Gradle wrapper executable
+        run: chmod +x gradlew
+
+      - name: Verify
+        run: ./gradlew clean test build --no-daemon --console=plain
+
+      - name: Upload plugin artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: living-npc-plugin-${{ github.sha }}
+          path: build/libs/*.jar
+          if-no-files-found: error
+          retention-days: 14
+
+  deploy-controlled:
+    name: Deploy controlled server
+    if: github.event_name == 'workflow_dispatch' && inputs.deploy_controlled == true
+    needs: verify
+    runs-on: ubuntu-latest
+    environment: controlled
+    permissions:
+      contents: read
+    steps:
+      - name: Explain controlled deployment boundary
+        run: |
+          echo "Controlled deployment requires repository-specific runner and secret configuration."
+          echo "No production deployment is performed by this workflow."
+          exit 1
