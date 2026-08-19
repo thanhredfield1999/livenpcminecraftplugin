@@ -52,6 +52,10 @@ final class GateRoute {
         if (candidate == null || finalTarget == null) {
             throw new IllegalArgumentException("Gate route phải có candidate và final target");
         }
+        if (finalTarget.getWorld() == null || !finalTarget.getWorld().equals(candidate.approach().getWorld())
+                || !finite(finalTarget)) {
+            throw new IllegalArgumentException("Gate route final target phải cùng world và có tọa độ hữu hạn");
+        }
         this.candidate = candidate;
         this.finalTarget = finalTarget.clone();
     }
@@ -88,10 +92,10 @@ final class GateRoute {
             double gateProgress = signedGateProgress(current);
             entrySideObserved |= gateProgress <= -EXIT_CLEARANCE;
             if (!entrySideObserved || gateProgress > -EXIT_CLEARANCE
-                    || !reached(current, target, crossingMargin, verticalTolerance)) return false;
+                    || !reached(current, target, crossingMargin, verticalTolerance, false)) return false;
         } else if (leg == Leg.EXIT) {
             if (signedGateProgress(current) >= EXIT_CLEARANCE
-                    && reached(current, target, crossingMargin, verticalTolerance)) {
+                    && reached(current, target, crossingMargin, verticalTolerance, false)) {
                 if (!exitConfirmationTickObserved || serverTick != lastExitConfirmationTick) {
                     exitSideConfirmations++;
                     exitConfirmationTickObserved = true;
@@ -102,7 +106,7 @@ final class GateRoute {
                 exitConfirmationTickObserved = false;
             }
             if (exitSideConfirmations < EXIT_CONFIRMATION_TICKS) return false;
-        } else if (!reached(current, target, margin, verticalTolerance)) {
+        } else if (!reached(current, target, margin, verticalTolerance, true)) {
             return false;
         }
         leg = switch (leg) {
@@ -119,7 +123,7 @@ final class GateRoute {
     }
 
     boolean approachReached(Location current, double margin, double verticalTolerance) {
-        return reached(current, candidate.approach(), Math.max(margin, 2.25), verticalTolerance);
+        return reached(current, candidate.approach(), margin, verticalTolerance, false);
     }
 
     void resetToApproach() {
@@ -148,18 +152,20 @@ final class GateRoute {
                 + (current.getZ() - planeZ) * directionZ / length;
     }
 
-    // Citizens VectorGoal lượng tử hóa target sang getBlockX/Y/Z, nên một leg có thể được
-    // Citizens báo COMPLETED quanh block-goal trong khi vẫn ngoài margin quanh tọa độ tâm block.
-    // Chấp nhận cả hai tâm để không từ chối kết quả mà chính Citizens đã xác nhận hoàn tất.
+    // Gate approach/exit dùng tọa độ đứng chính xác; chỉ FINAL cho phép block-goal fallback.
+    // Citizens có thể báo COMPLETED tại block-goal trước khi NPC đạt ô đứng thật, gây kẹt gate.
     private static boolean reached(
-            Location current, Location target, double margin, double verticalTolerance) {
+            Location current, Location target, double margin, double verticalTolerance, boolean allowBlockGoal) {
         if (current == null || target == null || current.getWorld() == null
-                || !current.getWorld().equals(target.getWorld())) return false;
-        return withinMargin(
-                        current, target.getX(), target.getY(), target.getZ(), margin, verticalTolerance)
-                || withinMargin(
-                        current, target.getBlockX(), target.getBlockY(), target.getBlockZ(),
-                        margin, verticalTolerance);
+                || !current.getWorld().equals(target.getWorld())
+                || !finite(current) || !finite(target)
+                || !Double.isFinite(margin) || margin < 0.0
+                || !Double.isFinite(verticalTolerance) || verticalTolerance <= 0.0) return false;
+        if (withinMargin(current, target.getX(), target.getY(), target.getZ(), margin, verticalTolerance)) {
+            return true;
+        }
+        return allowBlockGoal && withinMargin(
+                current, target.getBlockX(), target.getBlockY(), target.getBlockZ(), margin, verticalTolerance);
     }
 
     private static boolean withinMargin(
@@ -168,5 +174,11 @@ final class GateRoute {
         double deltaZ = current.getZ() - z;
         return deltaX * deltaX + deltaZ * deltaZ <= margin * margin
                 && Math.abs(current.getY() - y) < verticalTolerance;
+    }
+
+    private static boolean finite(Location location) {
+        return Double.isFinite(location.getX())
+                && Double.isFinite(location.getY())
+                && Double.isFinite(location.getZ());
     }
 }
