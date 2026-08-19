@@ -52,19 +52,19 @@ class GateRouteCoordinatorTest {
     }
 
     @Test
-    void timeoutSauMotLanRestartThuRecoveryLocalRoiStartLaiLeg() {
+    void timeoutSauMotLanRestartLoaiCandidateKhongTeleportRecovery() {
         FakeNavigation navigation = new FakeNavigation();
-        navigation.recoverResult = true;
         GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 10L, 0.75, 1.0);
         GateRoute.Candidate gate = candidate(4, 6);
 
         coordinator.start(location(0, 64, 0), location(10, 64, 0), List.of(gate), 0L);
         coordinator.tick(location(0, 64, 0), 10L);
-        coordinator.tick(location(0, 64, 0), 20L);
+        assertEquals(GateRouteCoordinator.Result.FAILED,
+                coordinator.tick(location(0, 64, 0), 20L));
 
-        assertEquals(1, navigation.recoverCount);
-        assertEquals(List.of(gate.approach(), gate.approach(), gate.approach()), navigation.targets);
-        assertTrue(coordinator.active());
+        assertEquals(0, navigation.recoverCount);
+        assertEquals(List.of(gate.approach(), gate.approach()), navigation.targets);
+        assertFalse(coordinator.active());
     }
 
     @Test
@@ -84,19 +84,22 @@ class GateRouteCoordinatorTest {
         assertEquals(List.of(first.approach(), first.approach()), navigation.targets);
         assertEquals(1, navigation.cancelCount);
 
+        // Exhaust leg 1. Coordinator releases it and starts candidate 2 once.
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS, coordinator.tick(start, 120L));
-        assertEquals(List.of(first.approach(), first.approach()), navigation.targets);
+        assertEquals(List.of(first.approach(), first.approach(), second.approach()), navigation.targets);
         assertEquals(2, navigation.cancelCount);
         assertTrue(coordinator.active());
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS, coordinator.tick(start, 129L));
         assertEquals(2, navigation.cancelCount);
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS, coordinator.tick(start, 130L));
         assertEquals(3, navigation.cancelCount);
+        assertEquals(List.of(first.approach(), first.approach(), second.approach(), second.approach()),
+                navigation.targets);
         assertTrue(coordinator.active());
     }
 
     @Test
-    void exhaustedLegRetryGiuRouteKhongRediscoverCandidateTrongCooldown() {
+    void exhaustedLegRetryFailsInsteadOfRetryingSameCandidateForever() {
         FakeNavigation navigation = new FakeNavigation();
         GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 10L, 0.75, 1.0);
         GateRoute.Candidate gate = candidate(4, 6);
@@ -104,23 +107,17 @@ class GateRouteCoordinatorTest {
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
                 coordinator.start(location(0, 64, 0), location(20, 64, 0), List.of(gate), 0L));
 
-        // Một restart bounded. Lần kế tiếp không đổi candidate/route, chỉ vào cooldown.
+        // Một restart bounded. Lần kế tiếp phải kết thúc candidate, không cooldown/retry vô hạn.
         assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
                 coordinator.tick(location(0, 64, 0), 10L));
-        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+        assertEquals(GateRouteCoordinator.Result.FAILED,
                 coordinator.tick(location(0, 64, 0), 20L));
-        assertTrue(coordinator.active());
+        assertFalse(coordinator.active());
         assertEquals(List.of(gate.approach(), gate.approach()), navigation.targets);
 
-        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+        assertEquals(GateRouteCoordinator.Result.IDLE,
                 coordinator.tick(location(0, 64, 0), 29L));
         assertEquals(List.of(gate.approach(), gate.approach()), navigation.targets);
-
-        // Sau cooldown, route cũ retry; không tạo plan/candidate mới.
-        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
-                coordinator.tick(location(0, 64, 0), 30L));
-        assertEquals(List.of(gate.approach(), gate.approach(), gate.approach()), navigation.targets);
-        assertTrue(coordinator.active());
     }
 
     @Test
@@ -291,10 +288,10 @@ class GateRouteCoordinatorTest {
         assertTrue(coordinator.active());
 
         navigation.navigating = false;
-        assertEquals(GateRouteCoordinator.Result.IN_PROGRESS,
+        assertEquals(GateRouteCoordinator.Result.FAILED,
                 coordinator.tick(location(48.4822, 64, -17.3), 3L));
         assertEquals(List.of(gate.approach(), gate.exit(), gate.exit()), navigation.targets);
-        assertTrue(coordinator.active());
+        assertFalse(coordinator.active());
     }
 
     @Test

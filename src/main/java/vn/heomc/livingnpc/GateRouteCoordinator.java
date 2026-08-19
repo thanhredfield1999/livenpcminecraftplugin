@@ -50,7 +50,6 @@ final class GateRouteCoordinator {
     private GateRoute route;
     private long legStartTick;
     private int legRestartCount;
-    private long retryNotBeforeTick = -1L;
     private long navigationGeneration;
 
     long navigationGeneration() {
@@ -89,7 +88,6 @@ final class GateRouteCoordinator {
 
     Result tick(Location current, long serverTick) {
         if (!active()) return Result.IDLE;
-        if (retryNotBeforeTick >= 0L && serverTick < retryNotBeforeTick) return Result.IN_PROGRESS;
         if (route.advanceIfReached(current, horizontalMargin, verticalTolerance, serverTick)) {
             if (route.leg() == GateRoute.Leg.COMPLETE) {
                 navigation.cancel();
@@ -119,12 +117,7 @@ final class GateRouteCoordinator {
         if (serverTick - legStartTick >= timeoutTicks) {
             navigation.cancel();
             if (legRestartCount >= MAX_LEG_RESTARTS) {
-                legRestartCount = 0;
-                if (navigation.recover(current, route.legTarget(), 2) && restartLeg(serverTick)) return Result.IN_PROGRESS;
-                navigation.releaseGate(route.candidate().key());
-                retryNotBeforeTick = serverTick + timeoutTicks;
-                legStartTick = serverTick;
-                return Result.IN_PROGRESS;
+                return rejectCandidateAndContinue(serverTick);
             }
             legRestartCount++;
             return restartLeg(serverTick) ? Result.IN_PROGRESS : rejectCandidateAndContinue(serverTick);
@@ -135,12 +128,7 @@ final class GateRouteCoordinator {
                 if (advanceApproachAndRequestGate(current, serverTick)) return Result.IN_PROGRESS;
             }
             if (legRestartCount >= MAX_LEG_RESTARTS) {
-                legRestartCount = 0;
-                if (navigation.recover(current, route.legTarget(), 2) && restartLeg(serverTick)) return Result.IN_PROGRESS;
-                navigation.releaseGate(route.candidate().key());
-                retryNotBeforeTick = serverTick + timeoutTicks;
-                legStartTick = serverTick;
-                return Result.IN_PROGRESS;
+                return rejectCandidateAndContinue(serverTick);
             }
             legRestartCount++;
             return restartLeg(serverTick) ? Result.IN_PROGRESS : rejectCandidateAndContinue(serverTick);
