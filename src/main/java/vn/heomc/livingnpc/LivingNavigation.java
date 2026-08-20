@@ -31,6 +31,22 @@ final class LivingNavigation {
         return allowDoors(parameters);
     }
 
+    static NavigatorParameters constrainGateRoute(
+            NavigatorParameters parameters, GateRoute.Candidate candidate, GateRoute.Leg leg) {
+        replaceGateRouteExaminer(parameters, candidate, leg);
+        return parameters;
+    }
+
+    static NavigatorParameters clearGateRouteConstraint(NavigatorParameters parameters) {
+        List<BlockExaminer> retained = new ArrayList<>();
+        for (BlockExaminer examiner : parameters.examiners()) {
+            if (!(examiner instanceof GateRouteExaminer)) retained.add(examiner);
+        }
+        parameters.clearExaminers();
+        for (BlockExaminer examiner : retained) parameters.examiner(examiner);
+        return parameters;
+    }
+
     private static void replaceUnsafeDoorExaminer(NavigatorParameters parameters) {
         List<BlockExaminer> retained = new ArrayList<>();
         boolean guardedExaminerPresent = false;
@@ -43,6 +59,17 @@ final class LivingNavigation {
             retained.add(examiner);
         }
         if (!guardedExaminerPresent) retained.add(new LivingDoorExaminer());
+        parameters.clearExaminers();
+        for (BlockExaminer examiner : retained) parameters.examiner(examiner);
+    }
+
+    private static void replaceGateRouteExaminer(
+            NavigatorParameters parameters, GateRoute.Candidate candidate, GateRoute.Leg leg) {
+        List<BlockExaminer> retained = new ArrayList<>();
+        for (BlockExaminer examiner : parameters.examiners()) {
+            if (!(examiner instanceof GateRouteExaminer)) retained.add(examiner);
+        }
+        retained.add(new GateRouteExaminer(candidate, leg));
         parameters.clearExaminers();
         for (BlockExaminer examiner : retained) parameters.examiner(examiner);
     }

@@ -13,6 +13,8 @@ import net.citizensnpcs.api.ai.PathfinderType;
 import net.citizensnpcs.api.astar.pathfinder.DoorExaminer;
 import net.citizensnpcs.api.npc.MetadataStore;
 import net.citizensnpcs.api.npc.NPC;
+import org.bukkit.Location;
+import org.bukkit.World;
 import org.junit.jupiter.api.Test;
 
 class LivingNavigationTest {
@@ -86,6 +88,35 @@ class LivingNavigationTest {
         verify(data).set("pathfinder-open-doors", false);
         assertFalse(parameters.hasExaminer(DoorExaminer.class));
         assertTrue(parameters.hasExaminer(LivingDoorExaminer.class));
+    }
+
+    @Test
+    void gateRouteConstraintReplacesOldConstraintAndCanBeCleared() {
+        World world = mock(World.class);
+        GateRoute.Candidate gate = new GateRoute.Candidate(
+                "world:5:64:0",
+                new Location(world, 3.5, 64.0, 0.5),
+                new Location(world, 4.5, 64.0, 0.5),
+                new Location(world, 6.5, 64.0, 0.5));
+        NavigatorParameters parameters = new NavigatorParameters();
+
+        LivingNavigation.allowDoors(parameters);
+        LivingNavigation.constrainGateRoute(parameters, gate, GateRoute.Leg.APPROACH);
+        LivingNavigation.constrainGateRoute(parameters, gate, GateRoute.Leg.EXIT);
+
+        assertEquals(1, countGateRouteExaminers(parameters));
+        LivingNavigation.clearGateRouteConstraint(parameters);
+        assertEquals(0, countGateRouteExaminers(parameters));
+        assertTrue(parameters.hasExaminer(VillageRouteExaminer.class));
+        assertTrue(parameters.hasExaminer(LivingDoorExaminer.class));
+    }
+
+    private static int countGateRouteExaminers(NavigatorParameters parameters) {
+        int count = 0;
+        for (var examiner : parameters.examiners()) {
+            if (examiner instanceof GateRouteExaminer) count++;
+        }
+        return count;
     }
 
 }

@@ -93,6 +93,28 @@ final class GateRoute {
                 : requestedMargin;
     }
 
+    static boolean permitsPathPoint(Candidate candidate, Leg leg, int x, int y, int z) {
+        if (candidate == null || leg == null || leg == Leg.COMPLETE) return false;
+        Location approach = candidate.approach();
+        Location exit = candidate.exit();
+        int approachX = approach.getBlockX();
+        int approachZ = approach.getBlockZ();
+        int exitX = exit.getBlockX();
+        int exitZ = exit.getBlockZ();
+        int directionX = Integer.signum(exitX - approachX);
+        int directionZ = Integer.signum(exitZ - approachZ);
+        if (directionX == 0 && directionZ == 0) return false;
+        int gateX = Math.floorDiv(approachX + exitX, 2);
+        int gateZ = Math.floorDiv(approachZ + exitZ, 2);
+        int progress = (x - gateX) * directionX + (z - gateZ) * directionZ;
+        if (leg == Leg.STAGING || leg == Leg.APPROACH) return progress <= 0;
+        if (leg == Leg.EXIT) {
+            int lateral = Math.abs((x - gateX) * directionZ - (z - gateZ) * directionX);
+            return lateral == 0;
+        }
+        return true;
+    }
+
     void observeGateOpened(String gateKey) {
         if (candidate.key().equals(gateKey)) gateOpenObserved = true;
     }

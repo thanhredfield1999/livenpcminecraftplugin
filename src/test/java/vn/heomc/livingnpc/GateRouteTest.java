@@ -15,6 +15,47 @@ import java.util.List;
 
 class GateRouteTest {
     @Test
+    void exitLegOnlyPermitsCrossingFencePlaneThroughConfiguredGateAperture() {
+        World world = mock(World.class);
+        GateRoute.Candidate gate = new GateRoute.Candidate(
+                "world:5:64:0",
+                new Location(world, 3.5, 64.0, 0.5),
+                new Location(world, 4.5, 64.0, 0.5),
+                new Location(world, 6.5, 64.0, 0.5));
+
+        assertTrue(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 5, 64, 0));
+        assertTrue(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 6, 64, 0));
+        assertFalse(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 5, 64, 3));
+        assertFalse(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 6, 64, 3));
+    }
+
+    @Test
+    void approachLegCannotCrossFencePlaneBeforeGateOpen() {
+        World world = mock(World.class);
+        GateRoute.Candidate gate = new GateRoute.Candidate(
+                "world:5:64:0",
+                new Location(world, 3.5, 64.0, 0.5),
+                new Location(world, 4.5, 64.0, 0.5),
+                new Location(world, 6.5, 64.0, 0.5));
+
+        assertTrue(GateRoute.permitsPathPoint(gate, GateRoute.Leg.APPROACH, 4, 64, 0));
+        assertTrue(GateRoute.permitsPathPoint(gate, GateRoute.Leg.APPROACH, 5, 64, 0));
+        assertFalse(GateRoute.permitsPathPoint(gate, GateRoute.Leg.APPROACH, 6, 64, 0));
+    }
+
+    @Test
+    void exitLegKeepsPathOnConfiguredGateAxisUntilCrossingCompletes() {
+        World world = mock(World.class);
+        GateRoute.Candidate gate = new GateRoute.Candidate(
+                "world:5:64:0",
+                new Location(world, 3.5, 64.0, 0.5),
+                new Location(world, 4.5, 64.0, 0.5),
+                new Location(world, 6.5, 64.0, 0.5));
+
+        assertTrue(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 4, 64, 0));
+        assertFalse(GateRoute.permitsPathPoint(gate, GateRoute.Leg.EXIT, 4, 64, 1));
+    }
+    @Test
     void gateEventDoesNotAdvanceUntilNpcReachesEachLegTarget() {
         World world = mock(World.class);
         Location approach = new Location(world, 9.5, 64.0, 0.5);

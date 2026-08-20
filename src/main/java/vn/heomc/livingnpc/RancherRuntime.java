@@ -425,6 +425,11 @@ final class RancherRuntime {
             gateRouteCoordinator = new GateRouteCoordinator(new GateRouteCoordinator.Navigation() {
                 @Override
                 public boolean start(Location legTarget, double margin) {
+                    return start(legTarget, margin, null, 0L);
+                }
+
+                @Override
+                public boolean start(Location legTarget, double margin, GateRoute.Leg leg, long generation) {
                     net.citizensnpcs.api.ai.NavigatorParameters parameters = gateNavigator.getLocalParameters();
                     Location legStart = npc.getEntity().getLocation();
                     if (!NavigationDiagnostics.shared().targetInRange(
@@ -433,6 +438,18 @@ final class RancherRuntime {
                                 npc, parameters, "RANCH_ENTER_GATE", legTarget,
                                 margin, margin);
                         return false;
+                    }
+                    if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
+                            || leg == GateRoute.Leg.EXIT) {
+                        GateRoute.Candidate routeCandidate = gates.stream()
+                                .filter(candidate -> candidate.staging().equals(legTarget)
+                                        || candidate.approach().equals(legTarget)
+                                        || candidate.exit().equals(legTarget))
+                                .findFirst().orElse(null);
+                        if (routeCandidate == null) return false;
+                        LivingNavigation.constrainGateRoute(parameters, routeCandidate, leg);
+                    } else {
+                        LivingNavigation.clearGateRouteConstraint(parameters);
                     }
                     if (!MovementService.startSimpleNavigation(
                             gateNavigator, legTarget, config.navigationSpeedModifier(), 0.0)) return false;
@@ -444,6 +461,16 @@ final class RancherRuntime {
                             .pathDistanceMargin(0.0)
                             .destinationTeleportMargin(0.0)
                             .stuckAction((stuckNpc, stuckNavigator) -> false);
+                    if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
+                            || leg == GateRoute.Leg.EXIT) {
+                        LivingNavigation.constrainGateRoute(activeParameters, gates.stream()
+                                .filter(candidate -> candidate.staging().equals(legTarget)
+                                        || candidate.approach().equals(legTarget)
+                                        || candidate.exit().equals(legTarget))
+                                .findFirst().orElseThrow(), leg);
+                    } else {
+                        LivingNavigation.clearGateRouteConstraint(activeParameters);
+                    }
                     NavigationDiagnostics.shared().attach(
                             npc, activeParameters, "RANCH_ENTER_GATE", legTarget,
                             margin, margin);

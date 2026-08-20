@@ -1770,6 +1770,18 @@ final class FarmerRuntime {
                         }
                         // Gate leg cần Citizens đi tới exact target; distance/path margin của Citizens
                         // nếu dùng 0.75 sẽ kết thúc tại block-goal trước ô đứng thật.
+                        if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
+                                || leg == GateRoute.Leg.EXIT) {
+                            GateRoute.Candidate routeCandidate = gates.stream()
+                                    .filter(candidate -> candidate.staging().equals(legTarget)
+                                            || candidate.approach().equals(legTarget)
+                                            || candidate.exit().equals(legTarget))
+                                    .findFirst().orElse(null);
+                            if (routeCandidate == null) return false;
+                            LivingNavigation.constrainGateRoute(parameters, routeCandidate, leg);
+                        } else {
+                            LivingNavigation.clearGateRouteConstraint(parameters);
+                        }
                         if (!MovementService.startSimpleNavigation(
                                 navigator, legTarget, config.navigationSpeedModifier(), 0.0)) return false;
                         NavigatorParameters activeParameters = NavigationDiagnostics.shared()
@@ -1781,6 +1793,16 @@ final class FarmerRuntime {
                                 .destinationTeleportMargin(0.0)
                                 .stuckAction((stuckNpc, stuckNavigator) -> false);
                         LivingNavigation.allowDoors(activeParameters);
+                        if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
+                                || leg == GateRoute.Leg.EXIT) {
+                            LivingNavigation.constrainGateRoute(activeParameters, gates.stream()
+                                    .filter(candidate -> candidate.staging().equals(legTarget)
+                                            || candidate.approach().equals(legTarget)
+                                            || candidate.exit().equals(legTarget))
+                                    .findFirst().orElseThrow(), leg);
+                        } else {
+                            LivingNavigation.clearGateRouteConstraint(activeParameters);
+                        }
                         String legOperation = operation + "_GATE_"
                                 + (leg == null ? "UNKNOWN" : leg.name())
                                 + "_GEN_" + generation;
