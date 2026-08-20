@@ -41,6 +41,10 @@ final class GateRouteCoordinator {
         default void releaseGate(String gateKey) {
         }
 
+        /** Gỡ examiner tạm trước khi route kết thúc; route thường không được giữ corridor cũ. */
+        default void clearGateRouteConstraint() {
+        }
+
         default boolean requestGate(String gateKey) {
             return false;
         }
@@ -223,6 +227,7 @@ final class GateRouteCoordinator {
     }
 
     private void clear() {
+        navigation.clearGateRouteConstraint();
         plan = null;
         route = null;
         legStartTick = 0L;

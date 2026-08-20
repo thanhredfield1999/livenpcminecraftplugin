@@ -489,6 +489,11 @@ final class RancherRuntime {
                 public void releaseGate(String gateKey) {
                     GatePassageService.release(npc, gateKey);
                 }
+
+                @Override
+                public void clearGateRouteConstraint() {
+                    LivingNavigation.clearGateRouteConstraint(gateNavigator.getLocalParameters());
+                }
             }, config.navigationTimeoutTicks(), config.navigationDistanceMargin(), 1.0);
             workEntryTarget = target;
             GateRouteCoordinator.Result result = gateRouteCoordinator.start(current, target, gates, serverTick);

@@ -1836,6 +1836,11 @@ final class FarmerRuntime {
                     public void releaseGate(String gateKey) {
                         GatePassageService.release(npc, gateKey);
                     }
+
+                    @Override
+                    public void clearGateRouteConstraint() {
+                        LivingNavigation.clearGateRouteConstraint(navigator.getLocalParameters());
+                    }
                 },
                 config.navigationTimeoutTicks(), navigationMargin, 1.0);
         GateRouteCoordinator.Result result = gateRouteCoordinator.start(

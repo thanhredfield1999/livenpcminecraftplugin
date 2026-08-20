@@ -275,6 +275,7 @@ class GateRouteCoordinatorTest {
 
         assertFalse(coordinator.active());
         assertEquals(1, navigation.cancelCount);
+        assertEquals(1, navigation.constraintClearCount);
         assertEquals(GateRouteCoordinator.Result.IDLE, coordinator.tick(location(0, 64, 0), 1L));
     }
 
@@ -443,6 +444,7 @@ class GateRouteCoordinatorTest {
         private boolean recoverResult;
         private int recoverCount;
         private int requestCount;
+        private int constraintClearCount;
 
         @Override
         public boolean start(Location target, double margin) {
@@ -493,6 +495,10 @@ class GateRouteCoordinatorTest {
         public void cancel() {
             cancelCount++;
             navigating = false;
+        }
+
+        public void clearGateRouteConstraint() {
+            constraintClearCount++;
         }
 
         @Override
