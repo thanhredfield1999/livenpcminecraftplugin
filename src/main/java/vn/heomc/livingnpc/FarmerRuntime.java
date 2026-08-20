@@ -1759,7 +1759,9 @@ final class FarmerRuntime {
                     }
 
                     @Override
-                    public boolean start(Location legTarget, double margin, GateRoute.Leg leg, long generation) {
+                    public boolean start(
+                            Location legTarget, double margin, GateRoute.Leg leg, long generation,
+                            GateRoute.Candidate routeCandidate) {
                         NavigatorParameters parameters = navigator.getLocalParameters();
                         Location current = npc.getEntity().getLocation();
                         if (!NavigationDiagnostics.shared().targetInRange(current, legTarget, parameters.range())) {
@@ -1772,11 +1774,6 @@ final class FarmerRuntime {
                         // nếu dùng 0.75 sẽ kết thúc tại block-goal trước ô đứng thật.
                         if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
                                 || leg == GateRoute.Leg.EXIT) {
-                            GateRoute.Candidate routeCandidate = gates.stream()
-                                    .filter(candidate -> candidate.staging().equals(legTarget)
-                                            || candidate.approach().equals(legTarget)
-                                            || candidate.exit().equals(legTarget))
-                                    .findFirst().orElse(null);
                             if (routeCandidate == null) return false;
                             LivingNavigation.constrainGateRoute(parameters, routeCandidate, leg);
                         } else {
@@ -1795,11 +1792,7 @@ final class FarmerRuntime {
                         LivingNavigation.allowDoors(activeParameters);
                         if (leg == GateRoute.Leg.STAGING || leg == GateRoute.Leg.APPROACH
                                 || leg == GateRoute.Leg.EXIT) {
-                            LivingNavigation.constrainGateRoute(activeParameters, gates.stream()
-                                    .filter(candidate -> candidate.staging().equals(legTarget)
-                                            || candidate.approach().equals(legTarget)
-                                            || candidate.exit().equals(legTarget))
-                                    .findFirst().orElseThrow(), leg);
+                            LivingNavigation.constrainGateRoute(activeParameters, routeCandidate, leg);
                         } else {
                             LivingNavigation.clearGateRouteConstraint(activeParameters);
                         }

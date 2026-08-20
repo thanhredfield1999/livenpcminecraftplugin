@@ -219,8 +219,9 @@ class GateRouteCoordinatorTest {
         FakeNavigation navigation = new FakeNavigation();
         GateRouteCoordinator coordinator = new GateRouteCoordinator(navigation, 20L, 0.75, 1.0);
         GateRoute.Candidate firstGate = candidate(4, 6);
+        // Gate 2 staging trùng gate 1 exit. Đây là topology liền kề thực tế cần giữ ownership.
         GateRoute.Candidate secondGate = new GateRoute.Candidate(
-                "world:11:64:0", location(8.5, 64, 0.5),
+                "world:11:64:0", firstGate.exit(),
                 location(9.5, 64, 0.5), location(11.5, 64, 0.5));
         Location finalTarget = location(18, 64, 0);
 
@@ -253,6 +254,8 @@ class GateRouteCoordinatorTest {
                 coordinator.tick(secondGate.staging(), 5L));
         assertEquals(List.of(firstGate.approach(), firstGate.exit(), secondGate.staging(), secondGate.staging(),
                 secondGate.approach()), navigation.targets);
+        // Gate 1 exit và gate 2 staging có thể trùng tọa độ. Runtime cần candidate sở hữu leg.
+        assertEquals(List.of(firstGate, firstGate, firstGate, secondGate, secondGate), navigation.candidates);
         assertEquals(GateRoute.Leg.APPROACH, coordinator.currentLeg());
 
         // Gate 2 can receive open intent only after route rebuild for Gate 1.
@@ -433,6 +436,7 @@ class GateRouteCoordinatorTest {
         private final List<Location> targets = new ArrayList<>();
         private final List<Double> margins = new ArrayList<>();
         private final List<Long> generations = new ArrayList<>();
+        private final List<GateRoute.Candidate> candidates = new ArrayList<>();
         private int cancelCount;
         private boolean navigating;
         private boolean failNextStart;
@@ -465,6 +469,13 @@ class GateRouteCoordinatorTest {
             }
             navigating = true;
             return true;
+        }
+
+        @Override
+        public boolean start(
+                Location target, double margin, GateRoute.Leg leg, long generation, GateRoute.Candidate candidate) {
+            candidates.add(candidate);
+            return start(target, margin, leg, generation);
         }
 
         @Override

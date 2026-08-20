@@ -24,6 +24,12 @@ final class GateRouteCoordinator {
             return start(target, margin);
         }
 
+        /** Candidate sở hữu leg; không suy ngược bằng tọa độ khi hai gate dùng chung waypoint. */
+        default boolean start(
+                Location target, double margin, GateRoute.Leg leg, long generation, GateRoute.Candidate candidate) {
+            return start(target, margin, leg, generation);
+        }
+
         boolean navigating();
 
         void cancel();
@@ -178,7 +184,7 @@ final class GateRouteCoordinator {
         if (target == null) return false;
         double margin = GateRoute.effectiveMargin(route.leg(), horizontalMargin);
         navigationGeneration++;
-        if (!navigation.start(target.clone(), margin, route.leg(), navigationGeneration)) return false;
+        if (!navigation.start(target.clone(), margin, route.leg(), navigationGeneration, route.candidate())) return false;
         legStartTick = serverTick;
         legRestartCount = 0;
         return true;
@@ -189,7 +195,7 @@ final class GateRouteCoordinator {
         if (target == null) return false;
         double margin = GateRoute.effectiveMargin(route.leg(), horizontalMargin);
         navigationGeneration++;
-        boolean started = navigation.start(target.clone(), margin, route.leg(), navigationGeneration);
+        boolean started = navigation.start(target.clone(), margin, route.leg(), navigationGeneration, route.candidate());
         if (started) legStartTick = serverTick;
         return started;
     }
